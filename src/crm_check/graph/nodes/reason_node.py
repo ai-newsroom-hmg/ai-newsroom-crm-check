@@ -139,10 +139,19 @@ def rule_based_reason(state: CrmCheckState) -> CrmCheckState:
 
     # Aggregat
     statuses = {fv.field: fv.status for fv in field_verdicts}
+    press_leaders_for_bemerkung = profile.claims_by_type.get("press_mention") or []
     aktuell: bool | None
     if statuses.get("person") == "not_verified":
         aktuell = None
-        bemerkung = "Person nicht verifizierbar (keine Tier-1-Quelle traf zu)."
+        if press_leaders_for_bemerkung:
+            top = max(press_leaders_for_bemerkung, key=lambda c: c.confidence)
+            snippet = (top.evidence_snippet or top.value or "")[:140].rstrip()
+            bemerkung = (
+                f"Kein Personenregister-Treffer; Pressemention via {top.source}: "
+                f"{snippet!r}."
+            )
+        else:
+            bemerkung = "Person nicht verifizierbar (keine Tier-1-Quelle traf zu)."
     elif "changed" in statuses.values() or contradictions:
         aktuell = False
         changes = [

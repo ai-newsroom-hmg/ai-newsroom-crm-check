@@ -10,6 +10,7 @@ beim Graph-Build (build.py), damit die Nodes selbst stateless sind.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -384,6 +385,8 @@ def make_websearch_node(enabled: bool = True) -> NodeFn:
 
     async def node(state: CrmCheckState) -> CrmCheckState:
         if not enabled:
+            return CrmCheckState(websearch_results=[])
+        if not os.getenv("SEARXNG_URL"):
             return CrmCheckState(websearch_results=[])
         # Skip if any structured source already produced plausible hit
         has_hit = bool(
