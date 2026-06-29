@@ -99,6 +99,12 @@ class Claim(BaseModel):
     evidence_url: str | None = None
     evidence_snippet: str | None = None
     extraction_method: ExtractionMethod = "api"
+    # Pipeline-v2 Phase 1g: Claims aus dem gleichen Source-Record (z.B. einem
+    # KgLobbyCandidate, der person_identity + position + employer + address
+    # erzeugt) teilen sich eine group_id. Wenn das identity-gate den Record
+    # ablehnt, droppt der correlate_node ALLE Claims dieser Gruppe — sonst
+    # entstehen verwaiste position/employer-Claims einer falschen Person.
+    group_id: str | None = None
 
     @property
     def confidence(self) -> float:

@@ -128,6 +128,48 @@ class TestPositives:
         assert d.rule == "R5_firstname_match"
 
 
+class TestOrphanClaimDrop:
+    """Bei Gate-Reject müssen ALLE Claims aus dem gleichen Source-Record fallen,
+    nicht nur die person_identity-Claim. Sonst verwaiste position/employer."""
+
+    def test_rejected_identity_drops_position_and_employer(self):
+        import asyncio
+        from crm_check.graph.claims_mapping import kg_lobby_to_claims
+        from crm_check.graph.nodes.correlate_node import make_correlate_node
+        from crm_check.graph.state import CrmCheckState
+
+        class _LobbyCand:
+            first_name = "Ulrich"
+            last_name = "Pieper"
+            function = "Vorstand"
+            role = "entrusted_person"
+            org_name = "Irgendwas Lobby e.V."
+            company_match = False
+
+        claims = kg_lobby_to_claims(_LobbyCand())
+        # 3 Claims: identity, position, employer — alle mit gleichem group_id
+        gids = {c.group_id for c in claims}
+        assert len(gids) == 1, "alle Claims aus einem Mapper müssen group_id teilen"
+        assert {c.claim_type for c in claims} == {"person_identity", "current_position", "current_employer"}
+
+        state: CrmCheckState = {
+            "clean_name": "Ulrike Pieper",
+            "first_name": "Ulrike",  # Frau
+            "last_name": "Pieper",
+            "company": "Bahlsen GmbH & Co. KG",
+            "claims": claims,
+        }
+        result = asyncio.run(make_correlate_node()(state))
+        profile = result["profile"]
+        # ALLE Claims aus der Gruppe sind weg
+        assert profile.claims_by_type.get("person_identity", []) == []
+        assert profile.claims_by_type.get("current_position", []) == []
+        assert profile.claims_by_type.get("current_employer", []) == []
+        # Audit-Trail dokumentiert den Reject
+        gate_log = result["match_gate_decisions"]
+        assert any(not d["accepted"] and d["rule"] == "R1_gender_mismatch" for d in gate_log)
+
+
 class TestEdgeCases:
     def test_missing_last_name_rejects(self):
         d = passes_identity_gate(

@@ -228,17 +228,13 @@ def make_correlate_node() -> NodeFn:
         crm_last = state.get("last_name", "") or ""
         crm_company = state.get("company")
         gate_log: list[dict] = []
-        accepted_claims: list[Claim] = []
+        rejected_groups: set[str] = set()
         for c in claims:
             if c.claim_type != "person_identity":
-                accepted_claims.append(c)
                 continue
-            # value ist "Vorname Nachname" — splitten für Source-Side
             parts = (c.value or "").split()
             src_first = parts[0] if len(parts) >= 2 else None
             src_last = parts[-1] if parts else ""
-            # Source-Org-Hint aus evidence_snippet (best-effort) ist nicht
-            # robust → wir geben None und verlassen uns auf R5 (firstname_match).
             decision = passes_identity_gate(
                 crm_first=crm_first,
                 crm_last=crm_last,
@@ -250,19 +246,25 @@ def make_correlate_node() -> NodeFn:
             gate_log.append({
                 "source": c.source,
                 "claim_value": c.value,
+                "group_id": c.group_id,
                 "accepted": decision.accepted,
                 "rule": decision.rule,
                 "reason": decision.reason,
                 "evidence_url": c.evidence_url,
             })
-            if decision.accepted:
-                accepted_claims.append(c)
-            else:
+            if not decision.accepted:
+                if c.group_id:
+                    rejected_groups.add(c.group_id)
                 log.info(
                     "match_gate REJECT row=%s source=%s rule=%s value=%r",
                     state.get("row_idx"), c.source, decision.rule, c.value,
                 )
-        claims = accepted_claims
+
+        # Pipeline-v2 Phase 1g: ALLE Claims der gerejecteten Source-Records droppen
+        # (nicht nur den person_identity-Claim). Sonst verwaiste position/employer-
+        # Claims einer falschen Person (Ulrich-Pieper-Ulrike-Vorfall 2026-06-29).
+        if rejected_groups:
+            claims = [c for c in claims if c.group_id not in rejected_groups]
 
         # 1. Gruppieren by claim_type
         by_type: dict[ClaimType, list[Claim]] = {}

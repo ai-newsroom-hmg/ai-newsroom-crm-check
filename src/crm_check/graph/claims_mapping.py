@@ -14,12 +14,30 @@ plausibel ist.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from crm_check.graph.scoring import base_confidence, max_boost
 from crm_check.graph.state import Claim, ClaimType, SourceName
 
 log = logging.getLogger(__name__)
+
+
+def _stamp_group(claims: list[Claim | None]) -> list[Claim]:
+    """Hängt allen Claims des gleichen Source-Records eine gemeinsame group_id an.
+
+    Pipeline-v2 Phase 1g: wenn das identity-gate diese Gruppe ablehnt
+    (z.B. Vornamen-Mismatch), droppt der correlate_node ALLE Claims dieser
+    Gruppe — sonst entstehen verwaiste position/employer-Claims einer falschen
+    Person (Ulrich-Pieper-Vorfall 2026-06-29).
+    """
+    gid = str(uuid.uuid4())
+    out: list[Claim] = []
+    for c in claims:
+        if c is None:
+            continue
+        out.append(c.model_copy(update={"group_id": gid}))
+    return out
 
 
 def _mk(
@@ -79,7 +97,7 @@ def kg_to_claims(c: Any) -> list[Claim]:
     if c.linkedin_url:
         out.append(_mk(claim_type="linkedin_url", value=c.linkedin_url, source=src,
                        boost=extra_boost, evidence_url=c.linkedin_url, extraction_method="api"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 # ─── KG lobby_persons + kg.entities ──────────────────────────────────────────
@@ -101,7 +119,7 @@ def kg_lobby_to_claims(lb: Any) -> list[Claim]:
     if lb.org_name:
         out.append(_mk(claim_type="current_employer", value=lb.org_name, source=src,
                        boost=boost, evidence_snippet=snippet, extraction_method="trigram"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 def kg_entity_to_claims(ke: Any) -> list[Claim]:
@@ -112,7 +130,7 @@ def kg_entity_to_claims(ke: Any) -> list[Claim]:
         claim_type="person_identity", value=ke.canonical_name, source=src,
         evidence_snippet=snippet, extraction_method="trigram",
     )
-    return [c] if c else []
+    return _stamp_group([c])
 
 
 # ─── NI mentions ──────────────────────────────────────────────────────────────
@@ -144,7 +162,7 @@ def ni_to_claims(n: Any) -> list[Claim]:
     if n.primary_org:
         out.append(_mk(claim_type="current_employer", value=n.primary_org, source=src_mention,
                        boost=boost, evidence_snippet=snippet, extraction_method="llm"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 # ─── OpenRegister persons + companies ────────────────────────────────────────
@@ -173,7 +191,7 @@ def openregister_person_to_claims(p: Any) -> list[Claim]:
             if org:
                 out.append(_mk(claim_type="current_employer", value=str(org), source=src,
                                boost=boost, evidence_snippet=snippet, extraction_method="api"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 def openregister_company_to_claims(c: Any) -> list[Claim]:
@@ -196,7 +214,7 @@ def openregister_company_to_claims(c: Any) -> list[Claim]:
     if c.registered_address:
         out.append(_mk(claim_type="address", value=c.registered_address, source=src,
                        boost=boost, evidence_snippet=snippet, extraction_method="api"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 # ─── Wikidata ─────────────────────────────────────────────────────────────────
@@ -220,7 +238,7 @@ def wikidata_to_claims(wd: Any) -> list[Claim]:
         ld_url = wd.linkedin_id if wd.linkedin_id.startswith("http") else f"https://www.linkedin.com/in/{wd.linkedin_id}/"
         out.append(_mk(claim_type="linkedin_url", value=ld_url, source=src,
                        evidence_url=ld_url, extraction_method="sparql"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 # ─── PressRelations (wraite Cloud-SQL, Tier 2) ───────────────────────────────
@@ -248,7 +266,7 @@ def press_relations_to_claims(h: Any) -> list[Claim]:
             boost=boost, evidence_url=url, evidence_snippet=snippet,
             extraction_method="api",
         ))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 # ─── hugoplus (HB-CMS Reuters/dpa/dpa-afx, Tier 2) ────────────────────────────
@@ -274,7 +292,7 @@ def hugoplus_to_claims(h: Any) -> list[Claim]:
             boost=boost, evidence_url=url, evidence_snippet=snippet,
             extraction_method="api",
         ))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
 
 
 # ─── WebSearch (nur nach LLM-Verify) ─────────────────────────────────────────
@@ -305,4 +323,4 @@ def verification_to_claims(v: Any) -> list[Claim]:
     if v.linkedin_url:
         out.append(_mk(claim_type="linkedin_url", value=v.linkedin_url, source=src,
                        evidence_url=v.linkedin_url, extraction_method="llm"))
-    return [x for x in out if x is not None]
+    return _stamp_group(out)
