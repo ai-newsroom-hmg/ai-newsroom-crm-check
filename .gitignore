@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# uv
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Env / Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+
+# Local test outputs
+/tmp_out/
+*_checked.xlsx
+
+# Test fixtures: real customer data stays local
+tests/fixtures/*.xlsx
+!tests/fixtures/sample_10_synthetic.xlsx

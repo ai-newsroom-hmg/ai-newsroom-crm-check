@@ -1,0 +1,27 @@
+# Lokales Dev-Stack — Phase 1a braucht NUR kg-postgres-mock.
+# In späteren Phasen kommen ni-postgres-mock + ollama (für CI-Tests) dazu.
+#
+# Echte CEQ-API + GKE-KG werden in Staging/Prod genutzt — hier nicht gemockt
+# (wir testen gegen seeded test data im lokalen kg-postgres).
+
+services:
+  kg-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: crm-check-kg-pg
+    environment:
+      POSTGRES_USER: kg
+      POSTGRES_PASSWORD: kg_dev_only
+      POSTGRES_DB: knowledge_graph
+    ports:
+      - "55432:5432"   # off-default port to avoid clash with system pg
+    volumes:
+      - kg-pg-data:/var/lib/postgresql/data
+      - ./tests/fixtures/kg_seed.sql:/docker-entrypoint-initdb.d/00-kg-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kg -d knowledge_graph"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  kg-pg-data:
