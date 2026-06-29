@@ -124,23 +124,28 @@ async def _check_async(
               default=None,
               help="JSONL-Audit-Trail pro Zeile (Halluzinations-Sicherheit). "
                    "Default: {out}.audit.jsonl neben dem Output.")
+@click.option("--concurrency", type=int, default=16,
+              help="Anzahl paralleler Zeilen-Pipelines (asyncio.Semaphore). "
+                   "Default 16 — Ollama NUM_PARALLEL sollte matchen.")
 @click.option("--limit", type=int, default=None)
 def run_cmd(
     xlsx: Path, out: Path,
     kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
     hugoplus_user: str | None, hugoplus_pass: str | None,
-    llm: bool, audit_jsonl: Path | None, limit: int | None,
+    llm: bool, audit_jsonl: Path | None, concurrency: int, limit: int | None,
 ) -> None:
     """Vollständiger agentischer Lauf — LangGraph + alle Quellen → 2-Reiter-Excel."""
     asyncio.run(_run_async(xlsx, out, kg_dsn, ni_dsn, wraite_dsn,
-                           hugoplus_user, hugoplus_pass, llm, audit_jsonl, limit))
+                           hugoplus_user, hugoplus_pass, llm, audit_jsonl,
+                           concurrency, limit))
 
 
 async def _run_async(
     xlsx: Path, out: Path,
     kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
     hugoplus_user: str | None, hugoplus_pass: str | None,
-    llm: bool, audit_jsonl: Path | None, limit: int | None,
+    llm: bool, audit_jsonl: Path | None,
+    concurrency: int, limit: int | None,
 ) -> None:
     from crm_check.graph.build import GraphDeps, build_graph
     from crm_check.graph.nodes.parse_node import parse_row
@@ -173,27 +178,49 @@ async def _run_async(
         use_llm_reason=llm,
     )
     graph = build_graph(deps)
-    final_states = []
 
     audit_path = audit_jsonl or out.with_suffix(out.suffix + ".audit.jsonl")
     audit_fp = audit_path.open("w", encoding="utf-8")
-    click.echo(f"Audit-JSONL: {audit_path}")
+    audit_lock = asyncio.Lock()
+    sem = asyncio.Semaphore(max(1, concurrency))
+    click.echo(f"Audit-JSONL: {audit_path}  | concurrency={concurrency}")
 
-    try:
-        for c in rows:
+    progress = {"done": 0, "total": len(rows), "t0": __import__("time").monotonic()}
+
+    async def _process(c) -> tuple[int, dict]:
+        async with sem:
             initial = parse_row(c)
-            final = await graph.ainvoke(initial)
-            final_states.append(final)
-            v = final.get("verdict")
+            try:
+                final = await graph.ainvoke(initial)
+            except Exception as e:
+                # Graceful: eine Zeile darf nicht den Voll-Run kippen
+                final = {"errors": [f"graph_invoke: {e}"], "row_idx": c.row_idx}
+            v = final.get("verdict") if isinstance(final, dict) else None
             mark = "✓" if (v and v.aktuell is True) else (
                 "✗" if (v and v.aktuell is False) else "?"
             )
             n_srcs = sum(len(fv.sources) for fv in (v.field_verdicts if v else []))
+            progress["done"] += 1
+            n_done = progress["done"]
+            elapsed = __import__("time").monotonic() - progress["t0"]
+            rate = n_done / max(elapsed, 0.1)
+            eta = (progress["total"] - n_done) / max(rate, 0.01)
             click.echo(
-                f"R{c.row_idx:>4}  {mark}  {c.name_only[:30]:<30} "
-                f"konf={v.konfidenz if v else 0:.2f}  srcs={n_srcs}  — {v.bemerkung[:60] if v else '-'}"
+                f"[{n_done:>4}/{progress['total']}  {rate:5.2f}r/s  ETA {int(eta):>4}s] "
+                f"R{c.row_idx:>4}  {mark}  {c.name_only[:28]:<28} "
+                f"k={v.konfidenz if v else 0:.2f} s={n_srcs}  — "
+                f"{(v.bemerkung[:60] if v else '-')}"
             )
-            _emit_audit_record(audit_fp, c, final)
+            async with audit_lock:
+                _emit_audit_record(audit_fp, c, final)
+                audit_fp.flush()
+            return c.row_idx, final
+
+    try:
+        results = await asyncio.gather(*(_process(c) for c in rows))
+        # Reihenfolge wiederherstellen (Semaphore + gather können out-of-order completen)
+        results.sort(key=lambda t: t[0])
+        final_states = [f for _, f in results]
         from crm_check.output.excel_writer import write_workbook
         write_workbook(out, final_states)
         click.echo(f"\n→ {out}")
