@@ -232,6 +232,11 @@ class CrmCheckState(TypedDict, total=False):
     claims: Annotated[list[Claim], _append_list]   # parallele Lookup-Nodes appenden
     profile: EntityProfile                          # vom correlate_node geschrieben
 
+    # Pipeline-v2 Phase 1g: Identity-Match-Gate-Entscheidungen (Audit-Trail)
+    # Liste pro Zeile mit allen person_identity-Claims die geprüft wurden,
+    # gleich ob akzeptiert oder gerejected. Schreibt correlate_node.
+    match_gate_decisions: Annotated[list[dict], _last]
+
     # Reasoning-Output
     verdict: RowVerdict
     enrichment: Enrichment

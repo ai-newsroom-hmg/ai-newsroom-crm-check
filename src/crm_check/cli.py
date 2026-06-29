@@ -262,6 +262,7 @@ def _emit_audit_record(fp, contact, final_state) -> None:
             }
             for cl in claims
         ],
+        "match_gate_decisions": final_state.get("match_gate_decisions") or [],
     }
     fp.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 

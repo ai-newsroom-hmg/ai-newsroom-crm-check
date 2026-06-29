@@ -179,7 +179,7 @@ class TestCorrelateNodeIntegration:
         press = _claim(ctype="press_mention", value="Mueller spricht in Davos",
                        source="ni_mentions", base=0.85)
         state: CrmCheckState = {
-            "clean_name": "Hans Mueller",
+            "clean_name": "Hans Mueller", "first_name": "Hans", "last_name": "Mueller",
             "position": "CEO",
             "company": "ACME",
             "claims": [identity_a, identity_b, identity_c, position, employer, press],
@@ -196,7 +196,7 @@ class TestCorrelateNodeIntegration:
         position = _claim(ctype="current_position", value="CFO",
                           source="kg_person_universe", base=0.85)
         state: CrmCheckState = {
-            "clean_name": "Hans Mueller",
+            "clean_name": "Hans Mueller", "first_name": "Hans", "last_name": "Mueller",
             "position": "Vorstand",
             "company": None,
             "claims": [identity, position],

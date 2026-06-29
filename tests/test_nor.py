@@ -91,7 +91,7 @@ class TestNorViaCorrelateNode:
             source="openregister", base_confidence=0.50, boost=0.15,
         )
         state: CrmCheckState = {
-            "clean_name": "Hans Mueller",
+            "clean_name": "Hans Mueller", "first_name": "Hans", "last_name": "Mueller",
             "position": "Geschaeftsfuehrer",
             "company": "Mittelstand AG",
             "claims": [identity, employer],
@@ -106,7 +106,7 @@ class TestNorViaCorrelateNode:
     def test_public_case_with_verification(self):
         identity = _identity("kg_lobby_persons", 0.85)
         state: CrmCheckState = {
-            "clean_name": "Hans Mueller",
+            "clean_name": "Hans Mueller", "first_name": "Hans", "last_name": "Mueller",
             "claims": [identity],
             "websearch_verification": WebSearchVerification(
                 person_confirmed=True,

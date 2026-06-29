@@ -28,6 +28,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 
+from crm_check.graph.match_gate import passes_identity_gate
 from crm_check.graph.scoring import (
     TIER1_SOURCES,
     score_from_confidence,
@@ -215,7 +216,53 @@ def make_correlate_node() -> NodeFn:
                 claims_by_type={},
                 notes=["Keine Claims aus Lookup-Quellen."],
             )
-            return CrmCheckState(profile=profile, timings_ms={"correlate": _ms(t0)})
+            return CrmCheckState(profile=profile, timings_ms={"correlate": _ms(t0)},
+                                 match_gate_decisions=[])
+
+        # 0. Identity-Match-Gate (Pipeline-v2 Phase 1g):
+        # B6-Vault-Regel: NIEMALS person_identity-Claim nur auf Last-Name.
+        # Vornamens-/Gender-/Firma-Anker pflicht. Reject-Claims werden NICHT
+        # weitergereicht (kein Surface-Match-False-Positive wie Ulrike vs Ulrich
+        # Pieper 2026-06-29). Audit-Trail in state.match_gate_decisions.
+        crm_first = state.get("first_name", "") or ""
+        crm_last = state.get("last_name", "") or ""
+        crm_company = state.get("company")
+        gate_log: list[dict] = []
+        accepted_claims: list[Claim] = []
+        for c in claims:
+            if c.claim_type != "person_identity":
+                accepted_claims.append(c)
+                continue
+            # value ist "Vorname Nachname" — splitten für Source-Side
+            parts = (c.value or "").split()
+            src_first = parts[0] if len(parts) >= 2 else None
+            src_last = parts[-1] if parts else ""
+            # Source-Org-Hint aus evidence_snippet (best-effort) ist nicht
+            # robust → wir geben None und verlassen uns auf R5 (firstname_match).
+            decision = passes_identity_gate(
+                crm_first=crm_first,
+                crm_last=crm_last,
+                crm_company=crm_company,
+                src_first=src_first,
+                src_last=src_last,
+                src_org=None,
+            )
+            gate_log.append({
+                "source": c.source,
+                "claim_value": c.value,
+                "accepted": decision.accepted,
+                "rule": decision.rule,
+                "reason": decision.reason,
+                "evidence_url": c.evidence_url,
+            })
+            if decision.accepted:
+                accepted_claims.append(c)
+            else:
+                log.info(
+                    "match_gate REJECT row=%s source=%s rule=%s value=%r",
+                    state.get("row_idx"), c.source, decision.rule, c.value,
+                )
+        claims = accepted_claims
 
         # 1. Gruppieren by claim_type
         by_type: dict[ClaimType, list[Claim]] = {}
@@ -263,7 +310,11 @@ def make_correlate_node() -> NodeFn:
             claims_by_type=leaders_by_type,
             notes=notes,
         )
-        return CrmCheckState(profile=profile, timings_ms={"correlate": _ms(t0)})
+        return CrmCheckState(
+            profile=profile,
+            timings_ms={"correlate": _ms(t0)},
+            match_gate_decisions=gate_log,
+        )
 
     return node
 
