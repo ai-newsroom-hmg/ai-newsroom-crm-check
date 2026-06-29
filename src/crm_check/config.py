@@ -10,8 +10,6 @@ class Settings(BaseSettings):
     kg_pg_dsn: str = ""
 
     # Phase 1b+
-    ceq_api_url: str = ""
-    ceq_api_token: str = ""
     ni_pg_dsn: str = ""
 
     # Phase 1f — PressRelations via wraite Cloud-SQL (STRIKT READ-ONLY)

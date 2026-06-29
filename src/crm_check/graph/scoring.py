@@ -17,7 +17,6 @@ SOURCE_CONFIDENCE: dict[SourceName, tuple[float, float]] = {
     "kg_person_universe": (0.85, 0.30),   # Pressearchiv-aequivalent (Journalisten-verifiziert)
     "kg_lobby_persons":   (0.70, 0.25),   # Amtliches Lobbyregister
     "kg_entities":        (0.60, 0.15),   # Organisations-Trigram, schwaecher
-    "ceq_api":            (0.85, 0.20),   # Eigene Recherche, scraping_active = boost
     "openregister":       (0.50, 0.30),   # Handelsregister: Adress-/Org-Abgleich = boost
     "wikidata":           (0.70, 0.25),   # Autoritative Register-Klasse
     # Tier 2 — Presse
@@ -35,7 +34,6 @@ SOURCE_CONFIDENCE: dict[SourceName, tuple[float, float]] = {
 TIER1_SOURCES: frozenset[SourceName] = frozenset({
     "kg_person_universe",
     "kg_lobby_persons",
-    "ceq_api",
     "openregister",
     "wikidata",
 })

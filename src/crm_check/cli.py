@@ -1,7 +1,4 @@
-"""CLI für Phase 1a: Excel parsen, Namen normalisieren, KG-Lookup.
-
-Spätere Phasen erweitern um CEQ-/NI-/Web-Search und Excel-Output.
-"""
+"""CLI für CRM-Check: Excel parsen, Multi-Source-Lookup, Verdict, Excel-Output."""
 
 from __future__ import annotations
 
@@ -87,7 +84,6 @@ async def _check_async(
                 staleness = (
                     "STALE-LI" if best.is_stale_linkedin
                     else "STALE-WD" if best.is_stale_wikidata
-                    else "STALE-CEQ" if best.is_stale_ceq
                     else "fresh"
                 )
                 click.echo(
@@ -110,77 +106,6 @@ async def _check_async(
         await conn.close()
 
 
-@main.command("ceq-check")
-@click.argument("xlsx", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option(
-    "--ceq-url", envvar="CEQ_API_URL", required=True,
-    help="z.B. http://100.78.225.57:8443 — liest auch $CEQ_API_URL",
-)
-@click.option(
-    "--ceq-token", envvar="CEQ_API_TOKEN", required=True,
-    help="Bearer-Token — liest auch $CEQ_API_TOKEN",
-)
-@click.option("--limit", type=int, default=None)
-def ceq_check(xlsx: Path, ceq_url: str, ceq_token: str, limit: int | None) -> None:
-    """Parsed Excel + queryt Production-CEQ-API. Zeigt echte Treffer pro Zeile."""
-    asyncio.run(_ceq_check_async(xlsx, ceq_url, ceq_token, limit))
-
-
-async def _ceq_check_async(
-    xlsx: Path, url: str, token: str, limit: int | None
-) -> None:
-    from crm_check.graph.nodes.ceq_lookup import CeqClient, rank_persons_by_company
-    from crm_check.normalize import strip_salutation
-
-    rows = list(parse_excel(xlsx))
-    if limit:
-        rows = rows[:limit]
-
-    async with CeqClient(url, token) as client:
-        health = await client.health()
-        click.echo(
-            f"CEQ-API connected — env={health.get('env')} rows={health.get('rows')} "
-            f"max_updated={health.get('max_updated_date')}\n"
-        )
-
-        matched = 0
-        for c in rows:
-            query = strip_salutation(c.salutation_name) or c.name_only
-            hits = await client.search_persons(query)
-            if not hits:
-                click.echo(
-                    f"R{c.row_idx:>4}  ·  {c.name_only[:30]:<30}  → CEQ: 0 Treffer"
-                )
-                continue
-
-            ranked = rank_persons_by_company(hits, c.company)
-            best, co_match = ranked[0]
-            # Sicher matchen wir wenn (a) Company-Match oder (b) Name vollständig
-            name_full_match = best.full_name.casefold().strip() == query.casefold().strip()
-            if co_match or name_full_match:
-                matched += 1
-                updated = best.updated_date or "?"
-                role = best.role or "?"
-                active = "Y" if best.scraping_active else "N" if best.scraping_active is False else "?"
-                until = f" until={best.appointed_until}" if best.appointed_until else ""
-                li = "LI" if best.linkedin_url else "-"
-                click.echo(
-                    f"R{c.row_idx:>4}  ✓  {c.name_only[:28]:<28}  "
-                    f"→ CEQ {best.full_name[:28]:<28}  "
-                    f"role={role[:18]:<18}  "
-                    f"{'CO✓' if co_match else 'CO·'}  "
-                    f"scrape={active}  {li}  upd={updated}{until}"
-                )
-            else:
-                # Nur Trigram-Treffer, aber kein Name/Company-Match
-                near = best.full_name
-                click.echo(
-                    f"R{c.row_idx:>4}  ?  {c.name_only[:28]:<28}  "
-                    f"→ CEQ kein klarer Match (best: {near})"
-                )
-
-        click.echo(f"\nSummary: {matched}/{len(rows)} mit hoher Konfidenz gematched.")
-
 
 @main.command("run")
 @click.argument("xlsx", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -191,26 +116,22 @@ async def _ceq_check_async(
 @click.option("--ni-dsn", envvar="NI_PG_DSN")
 @click.option("--wraite-dsn", envvar="WRAITE_DSN",
               help="wraite Cloud-SQL DSN (oder via WRAITE_DB_* env-vars)")
-@click.option("--ceq-url", envvar="CEQ_API_URL")
-@click.option("--ceq-token", envvar="CEQ_API_TOKEN")
 @click.option("--llm/--no-llm", default=False,
               help="Llama-3.3:70b @ ruediger für deutschen Verdict-Satz (sonst rule-based)")
 @click.option("--limit", type=int, default=None)
 def run_cmd(
     xlsx: Path, out: Path,
     kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
-    ceq_url: str | None, ceq_token: str | None,
     llm: bool, limit: int | None,
 ) -> None:
     """Vollständiger agentischer Lauf — LangGraph + alle Quellen → 2-Reiter-Excel."""
     asyncio.run(_run_async(xlsx, out, kg_dsn, ni_dsn, wraite_dsn,
-                           ceq_url, ceq_token, llm, limit))
+                           llm, limit))
 
 
 async def _run_async(
     xlsx: Path, out: Path,
     kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
-    ceq_url: str | None, ceq_token: str | None,
     llm: bool, limit: int | None,
 ) -> None:
     from crm_check.graph.build import GraphDeps, build_graph
@@ -234,13 +155,12 @@ async def _run_async(
     click.echo(
         f"Quellen: kg={'yes' if kg_dsn else 'off'} ni={'yes' if ni_dsn else 'off'} "
         f"wraite={'yes' if wraite_dsn else 'off'} "
-        f"ceq={'yes' if ceq_url else 'off'} llm={'yes' if llm else 'rule-based'}"
+        f"llm={'yes' if llm else 'rule-based'}"
     )
 
     deps = await GraphDeps.open(
         kg_dsn=kg_dsn, ni_dsn=ni_dsn, wraite_dsn=wraite_dsn,
-        ceq_url=ceq_url, ceq_token=ceq_token,
-        use_llm_reason=llm,
+            use_llm_reason=llm,
     )
     graph = build_graph(deps)
     final_states = []
@@ -275,24 +195,14 @@ async def _run_async(
     "--ni-dsn", envvar="NI_PG_DSN",
     help="Postgres-DSN für ni (entities + entity_profiles). Liest $NI_PG_DSN.",
 )
-@click.option(
-    "--ceq-url", envvar="CEQ_API_URL",
-    help="Optional CEQ-API-URL für DAX-/Politik-Treffer.",
-)
-@click.option(
-    "--ceq-token", envvar="CEQ_API_TOKEN",
-    help="Optional CEQ-API Bearer-Token.",
-)
 @click.option("--limit", type=int, default=None)
 def live_check(
     xlsx: Path,
     kg_dsn: str | None,
     ni_dsn: str | None,
-    ceq_url: str | None,
-    ceq_token: str | None,
     limit: int | None,
 ) -> None:
-    """Multi-Source-Live-Check: KG-Lobby + KG-Entity + NI-Entities (+ CEQ optional)."""
+    """Multi-Source-Live-Check: KG-Lobby + KG-Entity + NI-Entities."""
     if not (kg_dsn and ni_dsn):
         click.echo(
             "FEHLER: --kg-dsn + --ni-dsn pflicht. Beispiel:\n"
@@ -302,7 +212,7 @@ def live_check(
         )
         sys.exit(2)
     asyncio.run(
-        _live_check_async(xlsx, kg_dsn, ni_dsn, ceq_url, ceq_token, limit)
+        _live_check_async(xlsx, kg_dsn, ni_dsn, limit)
     )
 
 
@@ -310,8 +220,6 @@ async def _live_check_async(
     xlsx: Path,
     kg_dsn: str,
     ni_dsn: str,
-    ceq_url: str | None,
-    ceq_token: str | None,
     limit: int | None,
 ) -> None:
     import asyncpg
@@ -329,16 +237,10 @@ async def _live_check_async(
 
     kg = await asyncpg.connect(kg_dsn)
     ni = await asyncpg.connect(ni_dsn)
-    ceq_client = None
-    if ceq_url and ceq_token:
-        from crm_check.graph.nodes.ceq_lookup import CeqClient
-        ceq_client = CeqClient(ceq_url, ceq_token)
-        await ceq_client.__aenter__()
 
     try:
         click.echo(
             f"Sources: kg={kg_dsn.split('@')[-1]} ni={ni_dsn.split('@')[-1]} "
-            f"ceq={'yes' if ceq_client else 'off'}\n"
         )
         total_hits = 0
         for c in rows:
@@ -388,22 +290,12 @@ async def _live_check_async(
                     f"mentions={n0.mention_count}"
                     f"{' CO✓' if n0.company_match else ''}{tail}"
                 )
-            if ceq_client:
-                hits = await ceq_client.search_persons(clean)
-                if hits:
-                    h = hits[0]
-                    click.echo(
-                        f"        CEQ       {h.full_name[:34]:<34} "
-                        f"role={(h.role or '-')[:22]:<22} "
-                        f"co={h.company_name or '-'}"
-                    )
-            if not has_hit and not (ceq_client and hits):
-                click.echo("        —  kein Treffer in KG/NI/CEQ")
+
+            if not has_hit:
+                click.echo("        —  kein Treffer in KG/NI")
 
         click.echo(f"\nSummary: {total_hits}/{len(rows)} mit ≥1 Treffer in KG/NI.")
     finally:
-        if ceq_client:
-            await ceq_client.__aexit__(None, None, None)
         await ni.close()
         await kg.close()
 

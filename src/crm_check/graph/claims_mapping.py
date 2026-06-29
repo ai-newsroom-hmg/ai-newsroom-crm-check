@@ -147,36 +147,6 @@ def ni_to_claims(n: Any) -> list[Claim]:
     return [x for x in out if x is not None]
 
 
-# ─── CEQ persons ──────────────────────────────────────────────────────────────
-
-def ceq_to_claims(c: Any) -> list[Claim]:
-    """CeqPerson → person_identity + position + employer + linkedin."""
-    src: SourceName = "ceq_api"
-    snippet = f"{c.full_name} — {c.role or '?'} @ {c.company_name or '?'}"
-    # scraping_active=True → Source ist actively kept fresh
-    boost = 0.0
-    if getattr(c, "scraping_active", False):
-        boost += 0.10
-    # appointed_until in der Zukunft (oder nicht gesetzt) → Mandat laeuft
-    if not getattr(c, "appointed_until", None):
-        boost += 0.05
-
-    out: list[Claim] = [
-        _mk(claim_type="person_identity", value=c.full_name, source=src,
-            boost=boost, evidence_snippet=snippet, extraction_method="api"),
-    ]
-    if c.role:
-        out.append(_mk(claim_type="current_position", value=c.role, source=src,
-                       boost=boost, evidence_snippet=snippet, extraction_method="api"))
-    if c.company_name:
-        out.append(_mk(claim_type="current_employer", value=c.company_name, source=src,
-                       boost=boost, evidence_snippet=snippet, extraction_method="api"))
-    if c.linkedin_url:
-        out.append(_mk(claim_type="linkedin_url", value=c.linkedin_url, source=src,
-                       evidence_url=c.linkedin_url, extraction_method="api"))
-    return [x for x in out if x is not None]
-
-
 # ─── OpenRegister persons + companies ────────────────────────────────────────
 
 def openregister_person_to_claims(p: Any) -> list[Claim]:

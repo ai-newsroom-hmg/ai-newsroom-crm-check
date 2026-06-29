@@ -25,7 +25,6 @@ SourceName = Literal[
     "kg_entities",
     "ni_entities",
     "ni_mentions",
-    "ceq_api",
     "openregister",
     "wikidata",
     "linkedin",
@@ -218,7 +217,6 @@ class CrmCheckState(TypedDict, total=False):
     kg_lobby_candidates: Annotated[list, _last]
     kg_entity_candidates: Annotated[list, _last]
     ni_candidates: Annotated[list, _last]
-    ceq_candidates: Annotated[list, _last]
     openregister_candidates: Annotated[list, _last]
     openregister_persons: Annotated[list, _last]
     wikidata_hits: Annotated[list, _last]

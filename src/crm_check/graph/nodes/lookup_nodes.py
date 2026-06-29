@@ -17,7 +17,6 @@ from typing import Any
 import asyncpg
 
 from crm_check.graph.claims_mapping import (
-    ceq_to_claims,
     kg_entity_to_claims,
     kg_lobby_to_claims,
     kg_to_claims,
@@ -227,37 +226,6 @@ def make_ni_node(pool: asyncpg.Pool | None) -> NodeFn:
     return node
 
 
-def make_ceq_node(client: Any | None) -> NodeFn:
-    async def node(state: CrmCheckState) -> CrmCheckState:
-        if not client:
-            return CrmCheckState(ceq_candidates=[])
-        t0 = time.monotonic()
-        try:
-            name = state.get("clean_name", "")
-            if not name:
-                return CrmCheckState(ceq_candidates=[])
-            hits = await client.search_persons(name)
-            # Plausibilität: full_name muss first+last enthalten
-            first = state.get("first_name", "").casefold()
-            last = state.get("last_name", "").casefold()
-            filtered = []
-            for h in hits[:5]:
-                fn = (h.full_name or "").casefold()
-                if first and last and first in fn and last in fn:
-                    filtered.append(h)
-            # Claims-Mapping
-            claims: list[Claim] = []
-            for h in filtered:
-                claims.extend(ceq_to_claims(h))
-            return CrmCheckState(
-                ceq_candidates=filtered,
-                claims=claims,
-                timings_ms={"ceq": _ms(t0)},
-            )
-        except Exception as e:
-            log.warning(f"ceq_node: {e}")
-            return CrmCheckState(ceq_candidates=[], errors=[f"ceq: {e}"])
-    return node
 
 
 def make_openregister_node() -> NodeFn:
@@ -382,9 +350,9 @@ def make_websearch_node(enabled: bool = True) -> NodeFn:
         has_hit = bool(
             state.get("ni_candidates")
             or state.get("kg_lobby_candidates")
-            or state.get("ceq_candidates")
             or state.get("openregister_persons")
             or state.get("wikidata_hits")
+            or state.get("pressrelations_hits")
         )
         if has_hit:
             return CrmCheckState(websearch_results=[])

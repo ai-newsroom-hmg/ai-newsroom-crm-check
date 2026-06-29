@@ -6,7 +6,6 @@ Topologie (drei Phasen — strukturelle Quellen, dann Web mit LLM-Verify):
                          ├── kg
                          ├── kg_lobby
                          ├── ni
-                         ├── ceq
                          ├── openregister
                          └── wikidata
                                  ↓
@@ -33,7 +32,6 @@ from typing import Any
 import asyncpg
 
 from crm_check.graph.nodes.lookup_nodes import (
-    make_ceq_node,
     make_kg_lobby_node,
     make_kg_node,
     make_ni_node,
@@ -56,7 +54,6 @@ class GraphDeps:
     kg_pool: asyncpg.Pool | None = None
     ni_pool: asyncpg.Pool | None = None
     wraite_pool: asyncpg.Pool | None = None
-    ceq_client: Any | None = None
     use_llm_reason: bool = False
     use_websearch: bool = True
     use_wikidata: bool = True
@@ -69,8 +66,6 @@ class GraphDeps:
         kg_dsn: str | None = None,
         ni_dsn: str | None = None,
         wraite_dsn: str | None = None,
-        ceq_url: str | None = None,
-        ceq_token: str | None = None,
         use_llm_reason: bool | None = None,
         use_websearch: bool = True,
         use_wikidata: bool = True,
@@ -98,10 +93,6 @@ class GraphDeps:
                 command_timeout=15,
                 server_settings={"application_name": "crm-check-ro"},
             )
-        if ceq_url and ceq_token:
-            from crm_check.graph.nodes.ceq_lookup import CeqClient
-            deps.ceq_client = CeqClient(ceq_url, ceq_token)
-            await deps.ceq_client.__aenter__()
         if use_llm_reason is not None:
             deps.use_llm_reason = use_llm_reason
         else:
@@ -109,11 +100,6 @@ class GraphDeps:
         return deps
 
     async def close(self) -> None:
-        if self.ceq_client:
-            try:
-                await self.ceq_client.__aexit__(None, None, None)
-            except Exception:
-                pass
         if self.wraite_pool:
             await self.wraite_pool.close()
         if self.ni_pool:
@@ -132,7 +118,6 @@ def build_graph(deps: GraphDeps):
     g.add_node("kg", make_kg_node(deps.kg_pool))
     g.add_node("kg_lobby", make_kg_lobby_node(deps.kg_pool))
     g.add_node("ni", make_ni_node(deps.ni_pool))
-    g.add_node("ceq", make_ceq_node(deps.ceq_client))
     g.add_node("openregister", make_openregister_node())
     g.add_node("wikidata", make_wikidata_node())
     g.add_node("pressrelations", make_press_relations_node(deps.wraite_pool))
@@ -142,7 +127,7 @@ def build_graph(deps: GraphDeps):
     g.add_node("reason", llm_reason if deps.use_llm_reason else rule_based_reason)
 
     g.set_entry_point("normalize")
-    structured = ["kg", "kg_lobby", "ni", "ceq", "openregister", "wikidata", "pressrelations"]
+    structured = ["kg", "kg_lobby", "ni", "openregister", "wikidata", "pressrelations"]
     for n in structured:
         g.add_edge("normalize", n)
         # Strukturierte → websearch (fan-in damit websearch alle gesehen hat)

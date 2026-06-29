@@ -52,7 +52,7 @@ class TestSourceConfidence:
         # Pressearchiv-Aequivalent / autoritative Register
         assert base_confidence("kg_person_universe") == 0.85
         assert base_confidence("ni_mentions") == 0.85
-        assert base_confidence("ceq_api") == 0.85
+        # CEQ entfernt 2026-06-29
 
     def test_tier1_register_sources(self):
         assert base_confidence("wikidata") == 0.70
@@ -82,7 +82,7 @@ class TestTierBuckets:
     """NOR-Discovery braucht klare Tier-1/Tier-2-Mengen."""
 
     def test_tier1_contains_official_registers(self):
-        for s in ("kg_person_universe", "kg_lobby_persons", "ceq_api",
+        for s in ("kg_person_universe", "kg_lobby_persons",
                   "openregister", "wikidata"):
             assert s in TIER1_SOURCES, f"{s} fehlt in TIER1_SOURCES"
 

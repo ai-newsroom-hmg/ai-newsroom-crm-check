@@ -70,7 +70,7 @@ class TestCorroborationBoost:
     def test_three_sources_stack_boost(self):
         c1 = _claim(source="kg_lobby_persons", base=0.70)
         c2 = _claim(source="wikidata", base=0.70)
-        c3 = _claim(source="ceq_api", base=0.85)
+        c3 = _claim(source="kg_person_universe", base=0.85)
         leaders = _apply_corroboration(_group_by_normalized([c1, c2, c3]))
         assert len(leaders) == 1
         # +0.05 * 2 zusaetzliche Quellen
@@ -89,7 +89,7 @@ class TestContradictions:
     def test_crm_position_mismatch_adds_penalty(self):
         # Claim sagt "Vorstand", CRM sagt "Marketing-Leiter" → Penalty
         claim = _claim(ctype="current_position", value="Vorstand",
-                       source="ceq_api", base=0.85)
+                       source="kg_person_universe", base=0.85)
         result = _apply_contradictions(
             {"current_position": [claim]},
             crm_position="Marketing-Leiter",
@@ -100,7 +100,7 @@ class TestContradictions:
     def test_crm_employer_match_no_penalty(self):
         # ACME GmbH passt zu ACME → kein Penalty trotz Suffix-Unterschied
         claim = _claim(ctype="current_employer", value="ACME GmbH",
-                       source="ceq_api", base=0.85)
+                       source="kg_person_universe", base=0.85)
         result = _apply_contradictions(
             {"current_employer": [claim]},
             crm_position=None,
@@ -111,7 +111,7 @@ class TestContradictions:
     def test_multiple_different_positions_get_penalty_on_loser(self):
         # Zwei verschiedene Positions (nach group_by waeren das zwei Leaders)
         c1 = _claim(ctype="current_position", value="CEO",
-                    source="ceq_api", base=0.85, boost=0.10)  # winner
+                    source="kg_person_universe", base=0.85, boost=0.10)  # winner
         c2 = _claim(ctype="current_position", value="CFO",
                     source="wikidata", base=0.70)  # loser
         result = _apply_contradictions(
@@ -139,8 +139,8 @@ class TestScoreAggregate:
 
     def test_full_profile_scores_high(self):
         identity = _claim(value="Hans Mueller", source="kg_person_universe", base=0.85, boost=0.10)
-        position = _claim(ctype="current_position", value="CEO", source="ceq_api", base=0.85, boost=0.10)
-        employer = _claim(ctype="current_employer", value="ACME", source="ceq_api", base=0.85, boost=0.10)
+        position = _claim(ctype="current_position", value="CEO", source="kg_person_universe", base=0.85, boost=0.10)
+        employer = _claim(ctype="current_employer", value="ACME", source="kg_person_universe", base=0.85, boost=0.10)
         score = _aggregate_score({
             "person_identity": [identity],
             "current_position": [position],
@@ -172,10 +172,10 @@ class TestCorrelateNodeIntegration:
     def test_strong_claims_yield_confirmed_public(self):
         # 3 Tier-1-Quellen sagen alle das gleiche, plus press_mention → public
         identity_a = _claim(value="Hans Mueller", source="kg_lobby_persons", base=0.70)
-        identity_b = _claim(value="Hans Mueller", source="ceq_api", base=0.85)
+        identity_b = _claim(value="Hans Mueller", source="kg_person_universe", base=0.85)
         identity_c = _claim(value="Hans Mueller", source="wikidata", base=0.70)
-        position = _claim(ctype="current_position", value="CEO", source="ceq_api", base=0.85)
-        employer = _claim(ctype="current_employer", value="ACME", source="ceq_api", base=0.85)
+        position = _claim(ctype="current_position", value="CEO", source="kg_person_universe", base=0.85)
+        employer = _claim(ctype="current_employer", value="ACME", source="kg_person_universe", base=0.85)
         press = _claim(ctype="press_mention", value="Mueller spricht in Davos",
                        source="ni_mentions", base=0.85)
         state: CrmCheckState = {
@@ -192,9 +192,9 @@ class TestCorrelateNodeIntegration:
 
     def test_crm_position_mismatch_penalty_drops_score(self):
         # Quelle sagt CFO, CRM sagt Vorstand → Score sinkt durch Penalty
-        identity = _claim(value="Hans Mueller", source="ceq_api", base=0.85)
+        identity = _claim(value="Hans Mueller", source="kg_person_universe", base=0.85)
         position = _claim(ctype="current_position", value="CFO",
-                          source="ceq_api", base=0.85)
+                          source="kg_person_universe", base=0.85)
         state: CrmCheckState = {
             "clean_name": "Hans Mueller",
             "position": "Vorstand",

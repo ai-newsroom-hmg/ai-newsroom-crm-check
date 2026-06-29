@@ -48,7 +48,7 @@ class TestComputeNor:
 
     def test_a_tier1_plus_b_llm_verified_is_public(self):
         # LLM-bestaetigte WebSearch zaehlt als B-Signal (auch ohne Press-Mention)
-        claims = {"person_identity": [_identity("ceq_api", 0.85)]}
+        claims = {"person_identity": [_identity("kg_lobby_persons", 0.85)]}
         status, _, _ = _compute_nor(claims, verification_person_confirmed=True)
         assert status == "public"
 
@@ -104,7 +104,7 @@ class TestNorViaCorrelateNode:
         assert any("amtlich identifiziert" in n for n in profile.notes)
 
     def test_public_case_with_verification(self):
-        identity = _identity("ceq_api", 0.85)
+        identity = _identity("kg_lobby_persons", 0.85)
         state: CrmCheckState = {
             "clean_name": "Hans Mueller",
             "claims": [identity],
