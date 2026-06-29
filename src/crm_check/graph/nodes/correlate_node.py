@@ -229,6 +229,7 @@ def make_correlate_node() -> NodeFn:
         crm_company = state.get("company")
         gate_log: list[dict] = []
         rejected_groups: set[str] = set()
+        rejected_claim_ids: set[int] = set()  # Fallback wenn group_id fehlt
         for c in claims:
             if c.claim_type != "person_identity":
                 continue
@@ -255,6 +256,10 @@ def make_correlate_node() -> NodeFn:
             if not decision.accepted:
                 if c.group_id:
                     rejected_groups.add(c.group_id)
+                else:
+                    # Defensiver Fallback: ohne group_id (z.B. Test-Fixtures)
+                    # mindestens den person_identity-Claim selbst droppen.
+                    rejected_claim_ids.add(id(c))
                 log.info(
                     "match_gate REJECT row=%s source=%s rule=%s value=%r",
                     state.get("row_idx"), c.source, decision.rule, c.value,
@@ -263,8 +268,12 @@ def make_correlate_node() -> NodeFn:
         # Pipeline-v2 Phase 1g: ALLE Claims der gerejecteten Source-Records droppen
         # (nicht nur den person_identity-Claim). Sonst verwaiste position/employer-
         # Claims einer falschen Person (Ulrich-Pieper-Ulrike-Vorfall 2026-06-29).
-        if rejected_groups:
-            claims = [c for c in claims if c.group_id not in rejected_groups]
+        if rejected_groups or rejected_claim_ids:
+            claims = [
+                c for c in claims
+                if (c.group_id not in rejected_groups)
+                and (id(c) not in rejected_claim_ids)
+            ]
 
         # 1. Gruppieren by claim_type
         by_type: dict[ClaimType, list[Claim]] = {}
