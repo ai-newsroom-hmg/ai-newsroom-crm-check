@@ -32,6 +32,7 @@ from typing import Any
 import asyncpg
 
 from crm_check.graph.nodes.lookup_nodes import (
+    make_hugoplus_node,
     make_kg_lobby_node,
     make_kg_node,
     make_ni_node,
@@ -54,6 +55,8 @@ class GraphDeps:
     kg_pool: asyncpg.Pool | None = None
     ni_pool: asyncpg.Pool | None = None
     wraite_pool: asyncpg.Pool | None = None
+    hugoplus_user: str | None = None
+    hugoplus_pass: str | None = None
     use_llm_reason: bool = False
     use_websearch: bool = True
     use_wikidata: bool = True
@@ -66,12 +69,16 @@ class GraphDeps:
         kg_dsn: str | None = None,
         ni_dsn: str | None = None,
         wraite_dsn: str | None = None,
+        hugoplus_user: str | None = None,
+        hugoplus_pass: str | None = None,
         use_llm_reason: bool | None = None,
         use_websearch: bool = True,
         use_wikidata: bool = True,
         use_openregister: bool = True,
     ) -> "GraphDeps":
         deps = cls(
+            hugoplus_user=hugoplus_user,
+            hugoplus_pass=hugoplus_pass,
             use_websearch=use_websearch,
             use_wikidata=use_wikidata,
             use_openregister=use_openregister,
@@ -121,13 +128,14 @@ def build_graph(deps: GraphDeps):
     g.add_node("openregister", make_openregister_node())
     g.add_node("wikidata", make_wikidata_node())
     g.add_node("pressrelations", make_press_relations_node(deps.wraite_pool))
+    g.add_node("hugoplus", make_hugoplus_node(deps.hugoplus_user, deps.hugoplus_pass))
     g.add_node("websearch", make_websearch_node(enabled=deps.use_websearch))
     g.add_node("verify", make_verify_node())
     g.add_node("correlate", make_correlate_node())
     g.add_node("reason", llm_reason if deps.use_llm_reason else rule_based_reason)
 
     g.set_entry_point("normalize")
-    structured = ["kg", "kg_lobby", "ni", "openregister", "wikidata", "pressrelations"]
+    structured = ["kg", "kg_lobby", "ni", "openregister", "wikidata", "pressrelations", "hugoplus"]
     for n in structured:
         g.add_edge("normalize", n)
         # Strukturierte → websearch (fan-in damit websearch alle gesehen hat)

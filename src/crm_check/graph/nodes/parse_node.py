@@ -22,6 +22,8 @@ def parse_row(contact: CrmContact) -> CrmCheckState:
         kg_lobby_candidates=[],
         kg_entity_candidates=[],
         ni_candidates=[],
+        pressrelations_hits=[],
+        hugoplus_hits=[],
         openregister_candidates=[],
         social_profiles=[],
         errors=[],

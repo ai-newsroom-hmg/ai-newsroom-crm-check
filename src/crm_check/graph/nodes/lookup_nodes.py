@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 
 from crm_check.graph.claims_mapping import (
+    hugoplus_to_claims,
     kg_entity_to_claims,
     kg_lobby_to_claims,
     kg_to_claims,
@@ -26,6 +27,7 @@ from crm_check.graph.claims_mapping import (
     press_relations_to_claims,
     wikidata_to_claims,
 )
+from crm_check.graph.nodes.hugoplus_lookup import annotate_company_match, search_hugoplus
 from crm_check.graph.nodes.kg_lobby_lookup import lookup_kg_entity, lookup_kg_lobby
 from crm_check.graph.nodes.kg_lookup import lookup_kg
 from crm_check.graph.nodes.ni_lookup import lookup_ni, rank_with_company
@@ -335,6 +337,43 @@ def make_press_relations_node(pool: asyncpg.Pool | None) -> NodeFn:
                 pressrelations_hits=[],
                 errors=[f"pressrelations: {e}"],
                 timings_ms={"pressrelations": _ms(t0)},
+            )
+    return node
+
+
+def make_hugoplus_node(user: str | None, password: str | None) -> NodeFn:
+    """hugoplus-Lookup (HB-CMS Agenturmeldungen). Skipt sich wenn Auth fehlt."""
+    async def node(state: CrmCheckState) -> CrmCheckState:
+        if not (user and password):
+            return CrmCheckState(hugoplus_hits=[])
+        t0 = time.monotonic()
+        name = state.get("clean_name") or ""
+        if not name:
+            return CrmCheckState(hugoplus_hits=[], timings_ms={"hugoplus": _ms(t0)})
+        try:
+            hits = await search_hugoplus(
+                user=user, password=password,
+                query=name, rows=10, days_back=365,
+            )
+            hits = annotate_company_match(hits, state.get("company"))
+            # Plausibilitaet: Last-Name in Headline ODER Snippet
+            last = (state.get("last_name") or "").casefold()
+            claims: list[Claim] = []
+            for h in hits[:5]:
+                blob = ((h.headline or "") + " " + (h.snippet or "")).casefold()
+                if last and last in blob:
+                    claims.extend(hugoplus_to_claims(h))
+            return CrmCheckState(
+                hugoplus_hits=hits,
+                claims=claims,
+                timings_ms={"hugoplus": _ms(t0)},
+            )
+        except Exception as e:
+            log.warning(f"hugoplus_node: {e}")
+            return CrmCheckState(
+                hugoplus_hits=[],
+                errors=[f"hugoplus: {e}"],
+                timings_ms={"hugoplus": _ms(t0)},
             )
     return node
 

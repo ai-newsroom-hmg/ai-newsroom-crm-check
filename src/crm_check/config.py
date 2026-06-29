@@ -27,9 +27,11 @@ class Settings(BaseSettings):
     ollama_url: str = "http://ruediger.local:11434"
     ollama_model: str = "llama3.3:70b"
 
-    # Phase 1d (service mode)
+    # Phase 1g — hugoplus (HB-CMS Reuters/dpa/dpa-afx, HMG-Bestandsabo, kein Per-Call-Cost)
     hugoplus_user: str = ""
     hugoplus_pass: str = ""
+
+    # Phase 1d (service mode)
     jwt_secret: str = ""
 
 

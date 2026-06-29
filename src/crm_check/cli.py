@@ -116,23 +116,31 @@ async def _check_async(
 @click.option("--ni-dsn", envvar="NI_PG_DSN")
 @click.option("--wraite-dsn", envvar="WRAITE_DSN",
               help="wraite Cloud-SQL DSN (oder via WRAITE_DB_* env-vars)")
+@click.option("--hugoplus-user", envvar="HUGOPLUS_USER")
+@click.option("--hugoplus-pass", envvar="HUGOPLUS_PASS")
 @click.option("--llm/--no-llm", default=False,
               help="Llama-3.3:70b @ ruediger für deutschen Verdict-Satz (sonst rule-based)")
+@click.option("--audit-jsonl", type=click.Path(dir_okay=False, path_type=Path),
+              default=None,
+              help="JSONL-Audit-Trail pro Zeile (Halluzinations-Sicherheit). "
+                   "Default: {out}.audit.jsonl neben dem Output.")
 @click.option("--limit", type=int, default=None)
 def run_cmd(
     xlsx: Path, out: Path,
     kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
-    llm: bool, limit: int | None,
+    hugoplus_user: str | None, hugoplus_pass: str | None,
+    llm: bool, audit_jsonl: Path | None, limit: int | None,
 ) -> None:
     """Vollständiger agentischer Lauf — LangGraph + alle Quellen → 2-Reiter-Excel."""
     asyncio.run(_run_async(xlsx, out, kg_dsn, ni_dsn, wraite_dsn,
-                           llm, limit))
+                           hugoplus_user, hugoplus_pass, llm, audit_jsonl, limit))
 
 
 async def _run_async(
     xlsx: Path, out: Path,
     kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
-    llm: bool, limit: int | None,
+    hugoplus_user: str | None, hugoplus_pass: str | None,
+    llm: bool, audit_jsonl: Path | None, limit: int | None,
 ) -> None:
     from crm_check.graph.build import GraphDeps, build_graph
     from crm_check.graph.nodes.parse_node import parse_row
@@ -155,15 +163,22 @@ async def _run_async(
     click.echo(
         f"Quellen: kg={'yes' if kg_dsn else 'off'} ni={'yes' if ni_dsn else 'off'} "
         f"wraite={'yes' if wraite_dsn else 'off'} "
+        f"hugo={'yes' if (hugoplus_user and hugoplus_pass) else 'off'} "
         f"llm={'yes' if llm else 'rule-based'}"
     )
 
     deps = await GraphDeps.open(
         kg_dsn=kg_dsn, ni_dsn=ni_dsn, wraite_dsn=wraite_dsn,
-            use_llm_reason=llm,
+        hugoplus_user=hugoplus_user, hugoplus_pass=hugoplus_pass,
+        use_llm_reason=llm,
     )
     graph = build_graph(deps)
     final_states = []
+
+    audit_path = audit_jsonl or out.with_suffix(out.suffix + ".audit.jsonl")
+    audit_fp = audit_path.open("w", encoding="utf-8")
+    click.echo(f"Audit-JSONL: {audit_path}")
+
     try:
         for c in rows:
             initial = parse_row(c)
@@ -178,11 +193,77 @@ async def _run_async(
                 f"R{c.row_idx:>4}  {mark}  {c.name_only[:30]:<30} "
                 f"konf={v.konfidenz if v else 0:.2f}  srcs={n_srcs}  — {v.bemerkung[:60] if v else '-'}"
             )
+            _emit_audit_record(audit_fp, c, final)
         from crm_check.output.excel_writer import write_workbook
         write_workbook(out, final_states)
         click.echo(f"\n→ {out}")
     finally:
+        audit_fp.close()
         await deps.close()
+
+
+def _emit_audit_record(fp, contact, final_state) -> None:
+    """Schreibt einen Halluzinations-Audit-Eintrag pro Excel-Zeile.
+
+    Ein JSONL-Record je Zeile mit:
+      - Eingabe (row_idx, salutation_name, company)
+      - Verdict (aktuell, konfidenz, bemerkung, tier)
+      - Alle Claims (source, claim_type, value, confidence, evidence_url, snippet)
+      - Profile-Score / NOR-Status
+    Damit ist jede Verdict-Behauptung gegen ihre Originalquelle (URL + Snippet)
+    nachvollziehbar. Llama-Sätze ohne Claim-Backing fallen so auf.
+    """
+    import json
+    from datetime import datetime
+
+    v = final_state.get("verdict")
+    profile = final_state.get("profile")
+    claims = final_state.get("claims") or []
+
+    record = {
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "row_idx": contact.row_idx,
+        "input": {
+            "salutation_name": contact.salutation_name or "",
+            "name_only": contact.name_only or "",
+            "company": contact.company or "",
+        },
+        "verdict": (
+            {
+                "aktuell": v.aktuell,
+                "konfidenz": v.konfidenz,
+                "bemerkung": v.bemerkung,
+                "tier": getattr(v, "verification_tier", None),
+            }
+            if v else None
+        ),
+        "profile": (
+            {
+                "score": profile.score,
+                "tier": profile.verification_tier,
+                "nor_status": profile.nor_status,
+                "nor_score": profile.nor_score,
+            }
+            if profile else None
+        ),
+        "claims": [
+            {
+                "source": getattr(cl, "source", None),
+                "claim_type": getattr(cl, "claim_type", None),
+                "value": getattr(cl, "value", None),
+                "base_confidence": getattr(cl, "base_confidence", None),
+                "boost": getattr(cl, "boost", None),
+                "confidence": getattr(cl, "confidence", None),
+                "evidence_url": getattr(cl, "evidence_url", None),
+                "evidence_snippet": (
+                    (getattr(cl, "evidence_snippet", "") or "")[:240] or None
+                ),
+                "extraction_method": getattr(cl, "extraction_method", None),
+            }
+            for cl in claims
+        ],
+    }
+    fp.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
 @main.command("live-check")

@@ -30,6 +30,7 @@ SourceName = Literal[
     "linkedin",
     "perplexity",
     "pressrelations",  # wraite Cloud-SQL hypesignals_prod.press_relations_articles (READ-ONLY)
+    "hugoplus",        # HB-CMS-API: Reuters + dpa + dpa-afx (HMG-Bestandsabo, kein Per-Call-Cost)
     "llm_reasoning",
 ]
 
@@ -225,6 +226,7 @@ class CrmCheckState(TypedDict, total=False):
     websearch_summary: str
     websearch_verification: WebSearchVerification
     pressrelations_hits: Annotated[list, _last]
+    hugoplus_hits: Annotated[list, _last]
 
     # Pipeline-v2 Phase 1e: Claim-Stream + konsolidiertes Profile
     claims: Annotated[list[Claim], _append_list]   # parallele Lookup-Nodes appenden

@@ -251,6 +251,32 @@ def press_relations_to_claims(h: Any) -> list[Claim]:
     return [x for x in out if x is not None]
 
 
+# ─── hugoplus (HB-CMS Reuters/dpa/dpa-afx, Tier 2) ────────────────────────────
+
+def hugoplus_to_claims(h: Any) -> list[Claim]:
+    """HugoplusHit → press_mention-Claim (Agenturmeldung).
+
+    Auch hier: nur press_mention, da hugoplus keine strukturierten Rollen liefert.
+    company_match boost: +0.10.
+    """
+    src: SourceName = "hugoplus"
+    if h is None:
+        return []
+    headline = getattr(h, "headline", None) or ""
+    snippet = getattr(h, "snippet", None) or headline
+    media_id = getattr(h, "media_id", None)
+    boost = 0.10 if getattr(h, "company_match", False) else 0.0
+    url = f"https://hugoplus.handelsblatt.media/article/{media_id}" if media_id else None
+    out: list[Claim] = []
+    if headline:
+        out.append(_mk(
+            claim_type="press_mention", value=headline, source=src,
+            boost=boost, evidence_url=url, evidence_snippet=snippet,
+            extraction_method="api",
+        ))
+    return [x for x in out if x is not None]
+
+
 # ─── WebSearch (nur nach LLM-Verify) ─────────────────────────────────────────
 
 def verification_to_claims(v: Any) -> list[Claim]:
