@@ -24,12 +24,14 @@ from crm_check.graph.claims_mapping import (
     ni_to_claims,
     openregister_company_to_claims,
     openregister_person_to_claims,
+    press_relations_to_claims,
     wikidata_to_claims,
 )
 from crm_check.graph.nodes.kg_lobby_lookup import lookup_kg_entity, lookup_kg_lobby
 from crm_check.graph.nodes.kg_lookup import lookup_kg
 from crm_check.graph.nodes.ni_lookup import lookup_ni, rank_with_company
 from crm_check.graph.nodes.openregister_node import lookup_openregister
+from crm_check.graph.nodes.press_relations_lookup import lookup_press_relations
 from crm_check.graph.state import Claim, CrmCheckState
 
 log = logging.getLogger(__name__)
@@ -320,6 +322,52 @@ def make_wikidata_node() -> NodeFn:
         except Exception as e:
             log.warning(f"wikidata_node: {e}")
             return CrmCheckState(wikidata_hits=[], errors=[f"wikidata: {e}"])
+    return node
+
+
+def make_press_relations_node(pool: asyncpg.Pool | None) -> NodeFn:
+    """PressRelations-Lookup (wraite Cloud-SQL, 59,7M Artikel, STRIKT READ-ONLY).
+
+    Tier-2-Pressequelle. Sendet ausschliesslich SELECT. Sucht Person via
+    `content_tsv @@ phraseto_tsquery('simple', :name)` und sortiert nach
+    Company-Match + Reach + Datum. Skipt sich selbst wenn der Pool fehlt
+    (z.B. WRAITE_DB_PASSWORD nicht gesetzt).
+    """
+    async def node(state: CrmCheckState) -> CrmCheckState:
+        if not pool:
+            return CrmCheckState(pressrelations_hits=[])
+        t0 = time.monotonic()
+        name = state.get("clean_name") or ""
+        if not name:
+            return CrmCheckState(pressrelations_hits=[], timings_ms={"pressrelations": _ms(t0)})
+        try:
+            async with pool.acquire() as conn:
+                hits = await lookup_press_relations(
+                    conn,
+                    name,
+                    company=state.get("company"),
+                    days_back=365,
+                    limit=5,
+                )
+            claims: list[Claim] = []
+            for h in hits:
+                # Plausibilitaet: Headline+Snippet muessen den Last-Name enthalten
+                last = (state.get("last_name") or "").casefold()
+                blob = ((h.headline or "") + " " + (h.snippet or "")).casefold()
+                if last and last in blob:
+                    claims.extend(press_relations_to_claims(h))
+            return CrmCheckState(
+                pressrelations_hits=hits,
+                claims=claims,
+                timings_ms={"pressrelations": _ms(t0)},
+            )
+        except Exception as e:
+            log.warning(f"press_relations_node: {e}")
+            return CrmCheckState(
+                pressrelations_hits=[],
+                errors=[f"pressrelations: {e}"],
+                timings_ms={"pressrelations": _ms(t0)},
+            )
     return node
 
 

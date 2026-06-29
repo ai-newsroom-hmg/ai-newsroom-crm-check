@@ -23,6 +23,7 @@ SOURCE_CONFIDENCE: dict[SourceName, tuple[float, float]] = {
     # Tier 2 — Presse
     "ni_mentions":        (0.85, 0.30),   # Pressearchiv (Nicht-Genios)
     "ni_entities":        (0.60, 0.20),
+    "pressrelations":     (0.85, 0.30),   # wraite hypesignals_prod (59,7M Artikel, FTS) — READ-ONLY
     # Tier 3 — Social/Web
     "perplexity":         (0.70, 0.00),   # SearXNG/Web-Aggregator
     "linkedin":           (0.65, 0.00),   # Social, braucht Korroboration
@@ -43,6 +44,7 @@ TIER1_SOURCES: frozenset[SourceName] = frozenset({
 TIER2_SOURCES: frozenset[SourceName] = frozenset({
     "ni_mentions",
     "ni_entities",
+    "pressrelations",
     "perplexity",
 })
 

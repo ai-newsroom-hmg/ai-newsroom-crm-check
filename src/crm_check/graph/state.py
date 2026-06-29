@@ -30,6 +30,7 @@ SourceName = Literal[
     "wikidata",
     "linkedin",
     "perplexity",
+    "pressrelations",  # wraite Cloud-SQL hypesignals_prod.press_relations_articles (READ-ONLY)
     "llm_reasoning",
 ]
 
@@ -225,6 +226,7 @@ class CrmCheckState(TypedDict, total=False):
     websearch_results: Annotated[list, _last]
     websearch_summary: str
     websearch_verification: WebSearchVerification
+    pressrelations_hits: Annotated[list, _last]
 
     # Pipeline-v2 Phase 1e: Claim-Stream + konsolidiertes Profile
     claims: Annotated[list[Claim], _append_list]   # parallele Lookup-Nodes appenden

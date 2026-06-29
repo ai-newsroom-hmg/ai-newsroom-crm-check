@@ -253,6 +253,34 @@ def wikidata_to_claims(wd: Any) -> list[Claim]:
     return [x for x in out if x is not None]
 
 
+# ─── PressRelations (wraite Cloud-SQL, Tier 2) ───────────────────────────────
+
+def press_relations_to_claims(h: Any) -> list[Claim]:
+    """PressRelationsHit → press_mention-Claim.
+
+    PressRelations liefert NUR Mentions (Article-Metadata), keine strukturierten
+    Person-Rollen. Wir mappen daher EINEN press_mention-Claim pro Treffer.
+
+    company_match boost: +0.10 (Firma im Headline/Snippet) — analog ni_node.
+    """
+    src: SourceName = "pressrelations"
+    if h is None:
+        return []
+    headline = getattr(h, "headline", None) or ""
+    snippet = getattr(h, "snippet", None) or headline
+    url = getattr(h, "url", None)
+    boost = 0.10 if getattr(h, "company_match", False) else 0.0
+
+    out: list[Claim] = []
+    if headline:
+        out.append(_mk(
+            claim_type="press_mention", value=headline, source=src,
+            boost=boost, evidence_url=url, evidence_snippet=snippet,
+            extraction_method="api",
+        ))
+    return [x for x in out if x is not None]
+
+
 # ─── WebSearch (nur nach LLM-Verify) ─────────────────────────────────────────
 
 def verification_to_claims(v: Any) -> list[Claim]:

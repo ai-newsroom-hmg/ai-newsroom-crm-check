@@ -38,6 +38,7 @@ from crm_check.graph.nodes.lookup_nodes import (
     make_kg_node,
     make_ni_node,
     make_openregister_node,
+    make_press_relations_node,
     make_websearch_node,
     make_wikidata_node,
 )
@@ -54,6 +55,7 @@ class GraphDeps:
 
     kg_pool: asyncpg.Pool | None = None
     ni_pool: asyncpg.Pool | None = None
+    wraite_pool: asyncpg.Pool | None = None
     ceq_client: Any | None = None
     use_llm_reason: bool = False
     use_websearch: bool = True
@@ -66,6 +68,7 @@ class GraphDeps:
         *,
         kg_dsn: str | None = None,
         ni_dsn: str | None = None,
+        wraite_dsn: str | None = None,
         ceq_url: str | None = None,
         ceq_token: str | None = None,
         use_llm_reason: bool | None = None,
@@ -86,6 +89,15 @@ class GraphDeps:
             deps.ni_pool = await asyncpg.create_pool(
                 ni_dsn, min_size=1, max_size=4, command_timeout=10
             )
+        if wraite_dsn:
+            # wraite STRIKT READ-ONLY: kleiner Pool, application_name fuer pg_stat_activity
+            deps.wraite_pool = await asyncpg.create_pool(
+                wraite_dsn,
+                min_size=1,
+                max_size=2,
+                command_timeout=15,
+                server_settings={"application_name": "crm-check-ro"},
+            )
         if ceq_url and ceq_token:
             from crm_check.graph.nodes.ceq_lookup import CeqClient
             deps.ceq_client = CeqClient(ceq_url, ceq_token)
@@ -102,6 +114,8 @@ class GraphDeps:
                 await self.ceq_client.__aexit__(None, None, None)
             except Exception:
                 pass
+        if self.wraite_pool:
+            await self.wraite_pool.close()
         if self.ni_pool:
             await self.ni_pool.close()
         if self.kg_pool:
@@ -121,13 +135,14 @@ def build_graph(deps: GraphDeps):
     g.add_node("ceq", make_ceq_node(deps.ceq_client))
     g.add_node("openregister", make_openregister_node())
     g.add_node("wikidata", make_wikidata_node())
+    g.add_node("pressrelations", make_press_relations_node(deps.wraite_pool))
     g.add_node("websearch", make_websearch_node(enabled=deps.use_websearch))
     g.add_node("verify", make_verify_node())
     g.add_node("correlate", make_correlate_node())
     g.add_node("reason", llm_reason if deps.use_llm_reason else rule_based_reason)
 
     g.set_entry_point("normalize")
-    structured = ["kg", "kg_lobby", "ni", "ceq", "openregister", "wikidata"]
+    structured = ["kg", "kg_lobby", "ni", "ceq", "openregister", "wikidata", "pressrelations"]
     for n in structured:
         g.add_edge("normalize", n)
         # Strukturierte → websearch (fan-in damit websearch alle gesehen hat)

@@ -189,6 +189,8 @@ async def _ceq_check_async(
               help="Output-Excel-Pfad (default /tmp/crm_check_out.xlsx)")
 @click.option("--kg-dsn", envvar="KG_PG_DSN")
 @click.option("--ni-dsn", envvar="NI_PG_DSN")
+@click.option("--wraite-dsn", envvar="WRAITE_DSN",
+              help="wraite Cloud-SQL DSN (oder via WRAITE_DB_* env-vars)")
 @click.option("--ceq-url", envvar="CEQ_API_URL")
 @click.option("--ceq-token", envvar="CEQ_API_TOKEN")
 @click.option("--llm/--no-llm", default=False,
@@ -196,17 +198,18 @@ async def _ceq_check_async(
 @click.option("--limit", type=int, default=None)
 def run_cmd(
     xlsx: Path, out: Path,
-    kg_dsn: str | None, ni_dsn: str | None,
+    kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
     ceq_url: str | None, ceq_token: str | None,
     llm: bool, limit: int | None,
 ) -> None:
     """Vollständiger agentischer Lauf — LangGraph + alle Quellen → 2-Reiter-Excel."""
-    asyncio.run(_run_async(xlsx, out, kg_dsn, ni_dsn, ceq_url, ceq_token, llm, limit))
+    asyncio.run(_run_async(xlsx, out, kg_dsn, ni_dsn, wraite_dsn,
+                           ceq_url, ceq_token, llm, limit))
 
 
 async def _run_async(
     xlsx: Path, out: Path,
-    kg_dsn: str | None, ni_dsn: str | None,
+    kg_dsn: str | None, ni_dsn: str | None, wraite_dsn: str | None,
     ceq_url: str | None, ceq_token: str | None,
     llm: bool, limit: int | None,
 ) -> None:
@@ -217,13 +220,25 @@ async def _run_async(
     if limit:
         rows = rows[:limit]
 
+    # WRAITE_DSN aus 5 Einzel-ENV-Variablen zusammensetzen wenn nicht direkt gesetzt
+    if not wraite_dsn:
+        import os as _os
+        wh = _os.getenv("WRAITE_DB_HOST", "")
+        wpw = _os.getenv("WRAITE_DB_PASSWORD", "")
+        if wh and wpw:
+            wp = _os.getenv("WRAITE_DB_PORT", "5434")
+            wn = _os.getenv("WRAITE_DB_NAME", "postgres")
+            wu = _os.getenv("WRAITE_DB_USER", "gunterclaude")
+            wraite_dsn = f"postgresql://{wu}:{wpw}@{wh}:{wp}/{wn}"
+
     click.echo(
         f"Quellen: kg={'yes' if kg_dsn else 'off'} ni={'yes' if ni_dsn else 'off'} "
+        f"wraite={'yes' if wraite_dsn else 'off'} "
         f"ceq={'yes' if ceq_url else 'off'} llm={'yes' if llm else 'rule-based'}"
     )
 
     deps = await GraphDeps.open(
-        kg_dsn=kg_dsn, ni_dsn=ni_dsn,
+        kg_dsn=kg_dsn, ni_dsn=ni_dsn, wraite_dsn=wraite_dsn,
         ceq_url=ceq_url, ceq_token=ceq_token,
         use_llm_reason=llm,
     )
