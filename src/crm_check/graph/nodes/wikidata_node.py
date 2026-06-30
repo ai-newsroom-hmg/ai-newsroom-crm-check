@@ -1,89 +1,292 @@
-"""Wikidata-Node — SPARQL für Person-Identifikation + Position + Social-URLs.
+"""Wikidata-Node — 2-Stufen-Lookup nach Vault-Doku B2 (Entity Intelligence).
 
-Pattern aus `vault-tools/wikidata_social_enrich.py`: kein API-Key, kein
-Rate-Limit-Issue solange wir <5 Req/Sek + User-Agent setzen.
+Stufe 1: wbsearchentities-API für Fuzzy-Match (Label → QID-Kandidaten)
+Stufe 2: wbgetentities-API für Property-Pull (claims + labels + sitelinks)
 
-SPARQL-Strategie (Wikidata-Properties):
-  P31  = instance of (Q5 = Mensch)
-  P39  = position held (mit qualifier P580 start / P582 end)
-  P108 = employer
+Warum NICHT WDQS-SPARQL? Wikidata-Query-Service ist 2026 in aktivem Outage
+("Aggressively rate-limiting to 1 req / min" — wdqs outage 797a132). Die
+Entity-API liefert die gleichen Properties JSON-strukturiert, ist nicht von
+WDQS-Drosselung betroffen und schneller (kein SPARQL-Parse-Overhead).
+
+Properties (Vault-Doku B2):
+  P31   = instance of (Q5 = Mensch — Pre-Filter)
+  P39   = position held (qualifier P582 end_time → aktuell-Filter)
+  P106  = occupation (Beruf — Fallback wenn P39 leer)
+  P108  = employer (qualifier P582 end_time → aktuell-Filter)
+  P569  = date of birth
+  P570  = date of death (Pre-Filter → Deceased flag)
   P2002 = Twitter-Handle
   P6634 = LinkedIn-Personal-Profile-ID
-  P569 = date of birth
-  P19  = place of birth
-
-Wir laufen 2 Queries:
-  1. Direkt-Match auf Label "Vorname Nachname" (de-Label)
-  2. Falls leer + Firma vorhanden: search by employer (P108)
+  P4003 = Facebook-ID
+  P856  = official website
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
+import time
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 
-WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 USER_AGENT = "ai-newsroom-crm-check/0.1 (gunter.nowy@almagenic.com)"
 
 
 class WikidataPersonHit(BaseModel):
-    qid: str                            # Q-ID, z.B. Q42
+    qid: str
     label: str
     description: str | None = None
-    occupation: str | None = None       # P106-Label
+    occupation: str | None = None       # P106-Label (fallback wenn P39 leer)
     current_position: str | None = None  # P39 ohne end_time
     current_employer: str | None = None  # P108-Label
     employer_qid: str | None = None
     linkedin_id: str | None = None
     twitter_handle: str | None = None
+    facebook_id: str | None = None
+    website_url: str | None = None
     wikipedia_url: str | None = None
     date_of_birth: str | None = None
+    is_deceased: bool = False
 
 
-# SPARQL: Personen mit gegebenem Label, mit current-position+employer
-_SPARQL_PERSON = """
-SELECT DISTINCT ?p ?pLabel ?desc ?pos ?posLabel ?emp ?empLabel ?linkedin ?twitter ?dob ?wpUrl WHERE {
-  ?p rdfs:label ?label .
-  FILTER(LANG(?label) IN ("de", "en"))
-  FILTER(LCASE(STR(?label)) = LCASE(?name))
-  ?p wdt:P31 wd:Q5 .
-  OPTIONAL { ?p schema:description ?desc . FILTER(LANG(?desc) = "de") }
-  OPTIONAL {
-    ?p p:P39 ?posStmt .
-    ?posStmt ps:P39 ?pos .
-    FILTER NOT EXISTS { ?posStmt pq:P582 [] }
-  }
-  OPTIONAL {
-    ?p p:P108 ?empStmt .
-    ?empStmt ps:P108 ?emp .
-    FILTER NOT EXISTS { ?empStmt pq:P582 [] }
-  }
-  OPTIONAL { ?p wdt:P6634 ?linkedin }
-  OPTIONAL { ?p wdt:P2002 ?twitter }
-  OPTIONAL { ?p wdt:P569 ?dob }
-  OPTIONAL {
-    ?wpUrl schema:about ?p ;
-           schema:isPartOf <https://de.wikipedia.org/> .
-  }
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en" }
-}
-LIMIT 10
-"""
-
-
-import asyncio
-import time
-
-# Modul-globaler Rate-Limiter + Cache (process-life).
-# Wikidata 2026-Outage erzwingt "1 req/min" — wir nutzen Soft-Disable nach 1
-# 429-Antwort und Re-Try erst nach 60s, plus pro-Name-Cache.
-_RATE_GATE = {"blocked_until": 0.0, "lock": asyncio.Lock()}
+# Process-life cache + soft rate-gate
+_RATE_GATE: dict[str, Any] = {"blocked_until": 0.0, "lock": asyncio.Lock()}
 _CACHE: dict[str, list["WikidataPersonHit"]] = {}
+_QID_CACHE: dict[str, list[str]] = {}
+_LABEL_CACHE: dict[str, str] = {}
+
+
+async def _resolve_qids(
+    name: str,
+    *,
+    max_results: int = 3,
+    language: str = "de",
+) -> list[str]:
+    """Stufe 1: wbsearchentities → bis zu `max_results` QIDs für `name`.
+
+    Fragt zuerst `de`, fällt auf `en` zurück wenn 0 Treffer.
+    """
+    if not name:
+        return []
+    cache_key = f"{language}::{name.casefold()}"
+    if cache_key in _QID_CACHE:
+        return _QID_CACHE[cache_key]
+
+    try:
+        import httpx
+    except ImportError:
+        return []
+
+    headers = {"User-Agent": USER_AGENT}
+    params = {
+        "action": "wbsearchentities",
+        "search": name,
+        "language": language,
+        "format": "json",
+        "type": "item",
+        "limit": str(max_results),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=headers) as c:
+            resp = await c.get(WIKIDATA_API, params=params)
+            if resp.status_code == 429:
+                _RATE_GATE["blocked_until"] = time.monotonic() + 60.0
+                return []
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        log.warning(f"wbsearchentities '{name}' [{language}]: {e}")
+        return []
+
+    qids = [item["id"] for item in data.get("search", []) if item.get("id", "").startswith("Q")]
+    if not qids and language == "de":
+        qids = await _resolve_qids(name, max_results=max_results, language="en")
+    _QID_CACHE[cache_key] = qids
+    return qids
+
+
+async def _wb_get(params: dict[str, str], *, timeout: float = 15.0) -> dict | None:
+    """Wrapper für wbgetentities mit Rate-Gate."""
+    if time.monotonic() < _RATE_GATE["blocked_until"]:
+        return None
+    try:
+        import httpx
+    except ImportError:
+        return None
+    headers = {"User-Agent": USER_AGENT}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as c:
+            resp = await c.get(WIKIDATA_API, params=params)
+            if resp.status_code == 429:
+                _RATE_GATE["blocked_until"] = time.monotonic() + 60.0
+                return None
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        log.warning(f"wbgetentities {params.get('ids', '?')}: {e}")
+        return None
+
+
+def _statement_value(claim: dict) -> dict | str | None:
+    """Extrahiert mainsnak-datavalue eines Statements."""
+    return claim.get("mainsnak", {}).get("datavalue", {}).get("value")
+
+
+def _is_current(claim: dict) -> bool:
+    """True wenn Statement KEINEN qualifier P582 (end_time) hat."""
+    return "P582" not in (claim.get("qualifiers") or {})
+
+
+def _item_id_of(claim: dict) -> str | None:
+    """Aus einem item-typed Statement die referenzierte Q-ID ziehen."""
+    val = _statement_value(claim)
+    if isinstance(val, dict) and val.get("entity-type") == "item":
+        return val.get("id")
+    return None
+
+
+def _string_of(claim: dict) -> str | None:
+    val = _statement_value(claim)
+    if isinstance(val, str):
+        return val
+    return None
+
+
+def _pick_label(entity: dict, languages: tuple[str, ...] = ("de", "en")) -> str | None:
+    labels = entity.get("labels", {})
+    for lg in languages:
+        if lg in labels:
+            return labels[lg].get("value")
+    if labels:
+        return next(iter(labels.values())).get("value")
+    return None
+
+
+def _pick_description(entity: dict, languages: tuple[str, ...] = ("de", "en")) -> str | None:
+    descs = entity.get("descriptions", {})
+    for lg in languages:
+        if lg in descs:
+            return descs[lg].get("value")
+    return None
+
+
+def _pick_wikipedia_url(entity: dict) -> str | None:
+    sitelinks = entity.get("sitelinks", {})
+    for code in ("dewiki", "enwiki"):
+        link = sitelinks.get(code)
+        if link and link.get("url"):
+            return link["url"]
+        if link and link.get("title"):
+            wiki = "de" if code == "dewiki" else "en"
+            slug = link["title"].replace(" ", "_")
+            return f"https://{wiki}.wikipedia.org/wiki/{slug}"
+    return None
+
+
+async def _resolve_item_labels(qids: list[str]) -> dict[str, str]:
+    """Batch-Lookup für Q-IDs → Labels (de bevorzugt)."""
+    unknown = [q for q in qids if q and q not in _LABEL_CACHE]
+    if not unknown:
+        return {q: _LABEL_CACHE[q] for q in qids if q in _LABEL_CACHE}
+    # API erlaubt bis zu 50 IDs pro Call
+    for i in range(0, len(unknown), 50):
+        chunk = unknown[i : i + 50]
+        data = await _wb_get({
+            "action": "wbgetentities",
+            "ids": "|".join(chunk),
+            "props": "labels",
+            "languages": "de|en",
+            "format": "json",
+        })
+        if not data:
+            break
+        for qid, ent in (data.get("entities") or {}).items():
+            label = _pick_label(ent)
+            if label:
+                _LABEL_CACHE[qid] = label
+    return {q: _LABEL_CACHE[q] for q in qids if q in _LABEL_CACHE}
+
+
+def _filter_human(entity: dict) -> bool:
+    """P31 = Q5 (Mensch)? Pre-Filter B1."""
+    for claim in (entity.get("claims") or {}).get("P31", []):
+        if _item_id_of(claim) == "Q5":
+            return True
+    return False
+
+
+def _extract_hit(entity: dict, label_map: dict[str, str]) -> WikidataPersonHit | None:
+    qid = entity.get("id")
+    if not qid:
+        return None
+    claims = entity.get("claims") or {}
+
+    # P570 — Pre-Filter Deceased
+    is_deceased = bool(claims.get("P570"))
+
+    # P39 — aktuelle Position (ohne P582)
+    current_position_qid: str | None = None
+    for stmt in claims.get("P39", []):
+        if _is_current(stmt):
+            current_position_qid = _item_id_of(stmt)
+            if current_position_qid:
+                break
+    # P106 — Occupation (Fallback)
+    occupation_qid: str | None = None
+    for stmt in claims.get("P106", []):
+        occupation_qid = _item_id_of(stmt)
+        if occupation_qid:
+            break
+    # P108 — Employer
+    employer_qid: str | None = None
+    for stmt in claims.get("P108", []):
+        if _is_current(stmt):
+            employer_qid = _item_id_of(stmt)
+            if employer_qid:
+                break
+
+    # Social/Web (Literal-Strings)
+    linkedin_id = None
+    for stmt in claims.get("P6634", []):
+        linkedin_id = _string_of(stmt) or linkedin_id
+    twitter_handle = None
+    for stmt in claims.get("P2002", []):
+        twitter_handle = _string_of(stmt) or twitter_handle
+    facebook_id = None
+    for stmt in claims.get("P4003", []):
+        facebook_id = _string_of(stmt) or facebook_id
+    website_url = None
+    for stmt in claims.get("P856", []):
+        website_url = _string_of(stmt) or website_url
+
+    # P569 date of birth — time-stamp extrahieren
+    dob: str | None = None
+    for stmt in claims.get("P569", []):
+        v = _statement_value(stmt)
+        if isinstance(v, dict) and v.get("time"):
+            dob = v["time"]
+            break
+
+    return WikidataPersonHit(
+        qid=qid,
+        label=_pick_label(entity) or qid,
+        description=_pick_description(entity),
+        occupation=label_map.get(occupation_qid) if occupation_qid else None,
+        current_position=label_map.get(current_position_qid) if current_position_qid else None,
+        current_employer=label_map.get(employer_qid) if employer_qid else None,
+        employer_qid=employer_qid,
+        linkedin_id=linkedin_id,
+        twitter_handle=twitter_handle,
+        facebook_id=facebook_id,
+        website_url=website_url,
+        wikipedia_url=_pick_wikipedia_url(entity),
+        date_of_birth=dob,
+        is_deceased=is_deceased,
+    )
 
 
 async def lookup_wikidata_person(
@@ -91,74 +294,57 @@ async def lookup_wikidata_person(
     full_name: str,
     company_hint: str | None = None,
 ) -> list[WikidataPersonHit]:
-    """SPARQL gegen wd:Q5 mit Label-Match. Mit Rate-Limit-Soft-Disable."""
+    """2-Stufen-Lookup: wbsearchentities → QIDs → wbgetentities → Properties.
+
+    WDQS-Outage-robust: nutzt KEINE SPARQL.
+    """
     name = (full_name or "").strip()
     if not name:
         return []
     cache_key = name.casefold()
     if cache_key in _CACHE:
         return _CACHE[cache_key]
-    if time.monotonic() < _RATE_GATE["blocked_until"]:
+
+    qids = await _resolve_qids(name)
+    if not qids:
+        _CACHE[cache_key] = []
         return []
 
-    try:
-        import httpx
-    except ImportError:
+    data = await _wb_get({
+        "action": "wbgetentities",
+        "ids": "|".join(qids),
+        "props": "claims|labels|descriptions|sitelinks",
+        "languages": "de|en",
+        "sitefilter": "dewiki|enwiki",
+        "format": "json",
+    })
+    if not data:
         return []
 
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/sparql-results+json",
-    }
-    query = _SPARQL_PERSON.replace(
-        "?name",
-        f'"{name.replace(chr(34), chr(92) + chr(34))}"',
-    )
+    entities = data.get("entities") or {}
+    # B1 Pre-Filter: nur Menschen (Q5)
+    human_entities = {qid: ent for qid, ent in entities.items() if _filter_human(ent)}
+    if not human_entities:
+        _CACHE[cache_key] = []
+        return []
 
-    async with _RATE_GATE["lock"]:
-        try:
-            async with httpx.AsyncClient(timeout=20.0, headers=headers) as c:
-                resp = await c.get(
-                    WIKIDATA_SPARQL,
-                    params={"query": query, "format": "json"},
-                )
-                if resp.status_code == 429:
-                    _RATE_GATE["blocked_until"] = time.monotonic() + 60.0
-                    log.info("wikidata 429 — skipping further calls for 60s")
-                    return []
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            log.warning(f"wikidata SPARQL '{name}': {e}")
-            return []
+    # Item-IDs sammeln (P39/P106/P108) für Label-Resolution
+    ref_qids: set[str] = set()
+    for ent in human_entities.values():
+        claims = ent.get("claims") or {}
+        for prop in ("P39", "P106", "P108"):
+            for stmt in claims.get(prop, []):
+                qid = _item_id_of(stmt)
+                if qid:
+                    ref_qids.add(qid)
+    label_map = await _resolve_item_labels(sorted(ref_qids)) if ref_qids else {}
 
-    hits_by_qid: dict[str, WikidataPersonHit] = {}
-    for b in data.get("results", {}).get("bindings", []):
-        qid_url = b.get("p", {}).get("value", "")
-        qid = qid_url.rsplit("/", 1)[-1] if qid_url else None
-        if not qid:
-            continue
-        h = hits_by_qid.get(qid)
-        if not h:
-            h = WikidataPersonHit(
-                qid=qid,
-                label=b.get("pLabel", {}).get("value") or name,
-                description=b.get("desc", {}).get("value"),
-                current_position=b.get("posLabel", {}).get("value"),
-                current_employer=b.get("empLabel", {}).get("value"),
-                employer_qid=(b.get("emp", {}).get("value", "").rsplit("/", 1)[-1] or None) or None,
-                linkedin_id=b.get("linkedin", {}).get("value"),
-                twitter_handle=b.get("twitter", {}).get("value"),
-                wikipedia_url=b.get("wpUrl", {}).get("value"),
-                date_of_birth=b.get("dob", {}).get("value"),
-            )
-            hits_by_qid[qid] = h
-        else:
-            # Mehrere Positions/Employer-Rows: take first non-None
-            h.current_position = h.current_position or b.get("posLabel", {}).get("value")
-            h.current_employer = h.current_employer or b.get("empLabel", {}).get("value")
+    hits: list[WikidataPersonHit] = []
+    for ent in human_entities.values():
+        h = _extract_hit(ent, label_map)
+        if h and not h.is_deceased:
+            hits.append(h)
 
-    hits = list(hits_by_qid.values())
     if company_hint:
         ch = company_hint.casefold().strip()
         hits.sort(
@@ -170,7 +356,6 @@ async def lookup_wikidata_person(
 
 
 def linkedin_url(handle_or_id: str | None) -> str | None:
-    """P6634 ist die LinkedIn-ID — URL bauen."""
     if not handle_or_id:
         return None
     if handle_or_id.startswith("http"):
@@ -184,3 +369,11 @@ def twitter_url(handle: str | None) -> str | None:
     if handle.startswith("http"):
         return handle
     return f"https://x.com/{handle.lstrip('@')}"
+
+
+def facebook_url(handle_or_id: str | None) -> str | None:
+    if not handle_or_id:
+        return None
+    if handle_or_id.startswith("http"):
+        return handle_or_id
+    return f"https://www.facebook.com/{handle_or_id.lstrip('@')}"

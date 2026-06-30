@@ -68,3 +68,20 @@ def test_raw_preserves_all_columns(contacts):
     assert "ID" in c.raw
     assert "Mailcode" in c.raw
     assert c.raw["ID"] == 642013
+
+
+def test_smart_name_only_falls_back_to_full_person():
+    """Vorfall 2026-06-29: AddrLine1='Herr' + FullPerson='Herr Helmut Luksch'
+    → name_only muss 'Helmut Luksch' werden, nicht 'Herr'."""
+    from crm_check.parser import _smart_name_only
+    # AddrLine1 nur Anrede → fallback auf FullPerson
+    assert _smart_name_only("Herr", "Herr Helmut Luksch") == "Helmut Luksch"
+    assert _smart_name_only("Frau", "Frau Dr. Maria Müller") == "Maria Müller"
+    # AddrLine1 hat Namen → behält den
+    assert _smart_name_only("Frank Schwittay", "Herr Frank Schwittay") == "Frank Schwittay"
+    # AddrLine1 leer → fallback
+    assert _smart_name_only("", "Herr Stefan Grenzebach") == "Stefan Grenzebach"
+    # Beide leer
+    assert _smart_name_only("", "") == ""
+    # Mit Titel in AddrLine1 wird Titel mitgenommen (kein Strip in name_only)
+    assert _smart_name_only("Dr. Norbert Röttgen", "Herr Dr. Norbert Röttgen") == "Dr. Norbert Röttgen"

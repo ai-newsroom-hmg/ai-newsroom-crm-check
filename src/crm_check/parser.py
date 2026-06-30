@@ -9,6 +9,8 @@ from typing import Any
 import openpyxl
 from pydantic import BaseModel, Field
 
+from crm_check.normalize import strip_salutation
+
 
 class CrmContact(BaseModel):
     """Eine Zeile aus der Mailingliste, semantisch interpretiert.
@@ -55,6 +57,35 @@ def _coerce_str(value: Any) -> str:
     return str(value).strip()
 
 
+_ONLY_SALUTATION_TOKENS = {
+    "herr", "frau", "hr", "hr.", "fr", "fr.",
+    "mr", "mr.", "mrs", "mrs.", "ms", "ms.",
+    "dr", "dr.", "prof", "prof.",
+}
+
+
+def _is_only_salutation(s: str) -> bool:
+    """True wenn der String NUR aus einer Anrede besteht (z.B. AddrLine1='Herr')."""
+    return s.strip().lower() in _ONLY_SALUTATION_TOKENS
+
+
+def _smart_name_only(addr_line_1: str, full_person: str) -> str:
+    """Liefert den brauchbaren Klarnamen.
+
+    Im echten AD_D-Layout ist AddrLine1 mal der ganze Name ("Frank Schwittay")
+    und mal nur die Anrede ("Herr"). Wenn AddrLine1 leer ist oder nur eine
+    Anrede enthält, fallback auf strip_salutation(FullPerson). Vorfall
+    2026-06-29: R5 AddrLine1="Herr" + FullPerson="Herr Helmut Luksch" → ohne
+    Fix steht `name_only="Herr"` im State und alle Lookups suchen nach "Herr".
+
+    AddrLine1 mit substantiellem Inhalt (inkl. akademischen Titeln wie "Dr.")
+    bleibt UNVERÄNDERT — der name_only-Slot transportiert auch Titel weiter.
+    """
+    if addr_line_1 and not _is_only_salutation(addr_line_1):
+        return addr_line_1
+    return strip_salutation(full_person).strip() if full_person else ""
+
+
 def parse_excel(path: str | Path, sheet: str | None = None) -> Iterator[CrmContact]:
     """Iteriert über die Datenzeilen einer Mailing-Excel.
 
@@ -83,11 +114,13 @@ def parse_excel(path: str | Path, sheet: str | None = None) -> Iterator[CrmConta
             continue
         raw = {h: row[i] if i < len(row) else None for h, i in col.items()}
 
+        salutation_name = _coerce_str(raw.get("FullPerson"))
+        addr_line_1 = _coerce_str(raw.get("AddrLine1"))
         yield CrmContact(
             row_idx=row_idx,
             raw=raw,
-            salutation_name=_coerce_str(raw.get("FullPerson")),
-            name_only=_coerce_str(raw.get("AddrLine1")),
+            salutation_name=salutation_name,
+            name_only=_smart_name_only(addr_line_1, salutation_name),
             position=_coerce_str(raw.get("AddrLine2")),
             company=_coerce_str(raw.get("AddrLine3")),
             street=_coerce_str(raw.get("AddrLine4")),

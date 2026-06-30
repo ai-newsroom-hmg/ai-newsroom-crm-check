@@ -39,6 +39,10 @@ CRM-Eintrag (NUR fuer Stufe B verwenden, NICHT fuer Stufe A):
 Web-Suche-Treffer (Title + URL + Snippet):
 {hits}
 
+LinkedIn-Profile-Kandidaten (aus site:linkedin.com — auswaehlen welcher zur Person
+in Stufe A passt, NULL wenn keiner plausibel ist):
+{linkedin_candidates}
+
 ═══ STUFE A — Identifikation OHNE Fallbezug ═══
 Vergiss die CRM-Felder Position/Firma fuer Stufe A komplett. Schau dir
 ausschliesslich die Snippets an und beantworte:
@@ -74,6 +78,33 @@ Antworte EXAKT mit diesem JSON, nichts sonst, kein Markdown:
   "contradictions": [<0-3 Hinweise>],
   "note": <1 Satz deutsch, max 200 Zeichen>
 }}"""
+
+
+def _extract_linkedin_candidates(websearch_results: list) -> list[str]:
+    """Sammelt alle /in/-LinkedIn-Profile-URLs aus den WebSearch-Hits.
+
+    Wir filtern auf `linkedin.com/in/` (Personenprofile), nicht /posts/, /company/,
+    /pub/dir/. Das gibt dem LLM eine Shortlist zum Plausibilitaets-Check, statt
+    ihn frei aus Snippets extrahieren zu lassen (Random-10 v5 2026-06-30:
+    SearXNG liefert 18 Hits fuer "Kurt Zech site:linkedin.com", LLM extrahiert
+    NULL weil unsicher zwischen Namensvettern).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for wr in websearch_results:
+        for h in wr.hits:
+            url = (h.url or "").strip()
+            if "linkedin.com/in/" not in url.lower():
+                continue
+            # Normalisiere trailing slash / query
+            base = url.split("?")[0].rstrip("/")
+            if base in seen:
+                continue
+            seen.add(base)
+            out.append(base)
+            if len(out) >= 5:
+                return out
+    return out
 
 
 def _build_hits_block(websearch_results: list, max_hits: int = 8) -> str:
@@ -214,16 +245,25 @@ def make_verify_node() -> NodeFn:
             return CrmCheckState()
 
         t0 = time.monotonic()
+        li_candidates = _extract_linkedin_candidates(websearch)
+        li_block = "\n".join(f"  - {u}" for u in li_candidates) if li_candidates else "  (keine LinkedIn-Personenprofile in den Treffern)"
         prompt = _VERIFY_PROMPT.format(
             full_name=state.get("clean_name") or "?",
             position=state.get("position") or "?",
             company=state.get("company") or "?",
             zip_city=state.get("zip_city") or "?",
             hits=_build_hits_block(websearch),
+            linkedin_candidates=li_block,
         )
 
+        # Llama-3.3:70b braucht bei 8x parallel oft >60s pro Call (warm-up + queue).
+        # Timeout grosszuegig, Exception-Typ explizit loggen damit stumme Fails
+        # (Random-10 v4 2026-06-30: alle 8 Verify-Calls scheiterten ohne sichtbaren
+        # Grund) diagnostizierbar sind.
+        raw = ""
+        ollama_timeout = float(os.getenv("OLLAMA_VERIFY_TIMEOUT", "180"))
         try:
-            async with httpx.AsyncClient(timeout=60.0) as c:
+            async with httpx.AsyncClient(timeout=ollama_timeout) as c:
                 resp = await c.post(
                     f"{base_url.rstrip('/')}/api/generate",
                     json={
@@ -240,13 +280,14 @@ def make_verify_node() -> NodeFn:
                 resp.raise_for_status()
                 raw = (resp.json().get("response") or "").strip()
         except Exception as e:
-            log.warning(f"verify_node ollama call: {e}")
+            err_repr = f"{type(e).__name__}: {e!r}"
+            log.warning(f"verify_node ollama call failed — {err_repr}")
             return CrmCheckState(
-                errors=[f"verify: {e}"],
+                errors=[f"verify: {err_repr}"],
                 websearch_verification=WebSearchVerification(
                     person_confirmed=False,
                     confidence=0.0,
-                    note=f"LLM-Verify-Fehler: {e}",
+                    note=f"LLM-Verify-Fehler ({type(e).__name__})",
                 ),
                 timings_ms={"verify": int((time.monotonic() - t0) * 1000)},
             )

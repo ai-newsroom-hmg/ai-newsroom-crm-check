@@ -50,8 +50,14 @@ class TestReadOnlyInvariant:
         # content_tsv ist vorindexiert; phraseto_tsquery('simple', ...) ist das
         # robuste Pattern fuer Eigennamen (deutsche Lemmatisierung schadet hier)
         sql, _ = build_query()
-        assert "content_tsv @@ phraseto_tsquery" in sql
+        # NLP-Refactor 2026-06-30: phraseto_tsquery + content_tsv @@ via CTE.
+        # Optional zusaetzlich plainto_tsquery fuer Company-Boolean.
+        assert "phraseto_tsquery('simple'" in sql
+        assert "content_tsv @@" in sql
         assert "'simple'" in sql
+        # Bonus: NLP-Features die der intelligenter machen (ts_rank_cd, ts_headline)
+        assert "ts_rank_cd" in sql, "Cover-Density-Ranking sollte genutzt werden"
+        assert "ts_headline" in sql, "ts_headline liefert bessere Snippets als substring"
 
 
 class TestSourceWiring:
@@ -118,32 +124,36 @@ class TestPressRelationsToClaim:
 
 
 class TestLookupSorting:
-    """lookup_press_relations sortiert company_match > reach > date desc."""
+    """NLP-Refactor 2026-06-30: Sortierung passiert jetzt in SQL (ORDER BY
+    company_match_fts DESC, ts_rank_cd DESC, date DESC). Python-Code sortiert
+    nicht mehr nach. Test prueft Pass-Through + company_match-Flag-Mapping."""
 
-    def test_company_match_wins(self):
-        # Wir mocken eine asyncpg-Connection und liefern 3 Rohzeilen
+    def test_company_match_passthrough(self):
+        # SQL liefert vorsortiert; Mock simuliert die SQL-Reihenfolge.
         rows = [
-            {"article_date": date(2026, 1, 1), "domain": "x.de", "url": "u1",
-             "headline": "Random news without company", "sentiment": None,
-             "publication_reach": 500000, "snippet": "Hans Mueller spoke"},
             {"article_date": date(2026, 6, 1), "domain": "y.de", "url": "u2",
              "headline": "ACME boss Hans Mueller", "sentiment": 0.5,
-             "publication_reach": 50000, "snippet": "ACME boss Hans Mueller"},
+             "publication_reach": 50000, "snippet": "ACME boss Hans Mueller",
+             "company_match_fts": True},
+            {"article_date": date(2026, 1, 1), "domain": "x.de", "url": "u1",
+             "headline": "Random news without company", "sentiment": None,
+             "publication_reach": 500000, "snippet": "Hans Mueller spoke",
+             "company_match_fts": False},
             {"article_date": date(2026, 3, 1), "domain": "z.de", "url": "u3",
              "headline": "Hans Mueller in Brussels", "sentiment": None,
-             "publication_reach": 10000, "snippet": "Hans Mueller in Brussels"},
+             "publication_reach": 10000, "snippet": "Hans Mueller in Brussels",
+             "company_match_fts": False},
         ]
         conn = AsyncMock()
         conn.fetch = AsyncMock(return_value=rows)
         hits = asyncio.run(lookup_press_relations(
             conn, "Hans Mueller", company="ACME GmbH", days_back=365, limit=3
         ))
-        # ACME-Treffer muss zuerst kommen (company_match)
-        assert hits[0].url == "u2"
+        # SQL-Sortierung wird respektiert; company_match-Flag landet im Pydantic-Hit
+        assert [h.url for h in hits] == ["u2", "u1", "u3"]
         assert hits[0].company_match is True
-        # andere folgen nach reach desc
-        assert hits[1].url == "u1"  # 500k reach
-        assert hits[2].url == "u3"  # 10k reach
+        assert hits[1].company_match is False
+        assert hits[2].company_match is False
 
     def test_empty_name_short_circuits(self):
         conn = AsyncMock()

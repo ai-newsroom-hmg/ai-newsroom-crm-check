@@ -220,16 +220,21 @@ def openregister_company_to_claims(c: Any) -> list[Claim]:
 # ─── Wikidata ─────────────────────────────────────────────────────────────────
 
 def wikidata_to_claims(wd: Any) -> list[Claim]:
-    """WikidataPersonHit → person_identity + position + employer + linkedin + wikipedia."""
+    """WikidataPersonHit → person_identity + position/occupation + employer + linkedin/twitter/facebook/website.
+
+    Pipeline-v2 B2: P39 (current_position) bevorzugt, fällt auf P106 (occupation)
+    zurück wenn keine aktuelle Position vorhanden ist.
+    """
     src: SourceName = "wikidata"
-    snippet = f"{wd.label}: {wd.current_position or '?'} @ {wd.current_employer or '?'}"
+    snippet = f"{wd.label}: {wd.current_position or wd.occupation or '?'} @ {wd.current_employer or '?'}"
     url = f"https://www.wikidata.org/wiki/{wd.qid}" if wd.qid else None
     out: list[Claim] = [
         _mk(claim_type="person_identity", value=wd.label, source=src,
             evidence_url=url, evidence_snippet=snippet, extraction_method="sparql"),
     ]
-    if wd.current_position:
-        out.append(_mk(claim_type="current_position", value=wd.current_position, source=src,
+    position_value = wd.current_position or wd.occupation
+    if position_value:
+        out.append(_mk(claim_type="current_position", value=position_value, source=src,
                        evidence_url=url, evidence_snippet=snippet, extraction_method="sparql"))
     if wd.current_employer:
         out.append(_mk(claim_type="current_employer", value=wd.current_employer, source=src,

@@ -388,15 +388,20 @@ def make_websearch_node(enabled: bool = True) -> NodeFn:
             return CrmCheckState(websearch_results=[])
         if not os.getenv("SEARXNG_URL"):
             return CrmCheckState(websearch_results=[])
-        # Skip if any structured source already produced plausible hit
-        has_hit = bool(
+        # Skip nur wenn eine STARKE strukturierte PERSON-MATCH-Quelle die Person
+        # mit Identitaets-Garantie liefert. Pressmentions + Wikidata zaehlen NICHT —
+        # beide koennen Namensvetter sein:
+        #  - Wikidata: Lindner-Linguist vs Groz-Beckert-Lindner (Random-10 2026-06-29)
+        #  - Press:    "Nicole Simon bei »Frau Unternehmer«" matched zufaellig
+        #              gegen "Carola Biesterfeld" durch token-overlap
+        # KG-Lobby (Bundestag) / NI (Entity-ID) / OpenRegister (Handelsregister-Officer)
+        # liefern echte Person-Identifikation und Stoppen WebSearch.
+        has_strong_hit = bool(
             state.get("ni_candidates")
             or state.get("kg_lobby_candidates")
             or state.get("openregister_persons")
-            or state.get("wikidata_hits")
-            or state.get("pressrelations_hits")
         )
-        if has_hit:
+        if has_strong_hit:
             return CrmCheckState(websearch_results=[])
         t0 = time.monotonic()
         try:
