@@ -646,5 +646,111 @@ async def _preflight_async(kg_dsn, ni_dsn, wraite_dsn, or_key,
     click.echo("→ GO für Bulk-Run." if tier1_fail == 0 else "→ DEGRADED (--no-strict bewusst akzeptiert).")
 
 
+@main.command("sonnet-check")
+@click.argument("xlsx", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--out", type=click.Path(dir_okay=False, path_type=Path), required=True,
+              help="Output-XLSX (2 Reiter: Check + Anreicherung)")
+@click.option("--limit", type=int, default=None,
+              help="Nur die ersten N Zeilen (Random-10 / Test-Runs)")
+@click.option("--batch-size", type=int, default=5,
+              help="Personen pro OpenRouter-Call (default 5)")
+@click.option("--max-parallel", type=int, default=6,
+              help="Maximale parallele Calls (default 6)")
+@click.option("--model", default="anthropic/claude-sonnet-4-6:online",
+              help="OpenRouter-Model (:online = built-in web-search)")
+@click.option("--verdicts-json", type=click.Path(dir_okay=False, path_type=Path),
+              default=None, help="Raw-Verdicts als JSONL speichern")
+@click.option("--random", "random_n", type=int, default=None,
+              help="N Zufalls-Zeilen (reproduzierbar via --random-seed)")
+@click.option("--random-seed", type=int, default=42,
+              help="Seed fuer --random (default 42 — reproduzierbar)")
+@click.option("--exclude-jsonl", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              multiple=True,
+              help="Skip Zeilen deren row_idx in diesen JSONLs vorkommt (fuer Voll-Run-Skip).")
+def sonnet_check_cmd(xlsx, out, limit, batch_size, max_parallel, model, verdicts_json,
+                     random_n, random_seed, exclude_jsonl):
+    """Sonnet 4.6 + OpenRouter :online statt Llama-8-Stage-Pipeline.
+
+    User-Pivot 2026-06-30: Llama-3.3:70b ist parametrisch ahnungslos ueber
+    Kabinett Merz 2025. Sonnet 4.6 + OpenRouter web-search loest die Aufgabe.
+
+    DSGVO: nur Name+Position+Firma raus an OpenRouter→Anthropic. Keine Adresse.
+
+    Beispiele:
+      crm-check sonnet-check excel.xlsx --random 50 --out ~/Downloads/test50.xlsx
+      crm-check sonnet-check excel.xlsx --out ~/Downloads/full.xlsx \\
+          --exclude-jsonl /tmp/test50.jsonl
+    """
+    import asyncio
+    import json as _json
+    import random as _random
+    from crm_check.parser import parse_excel
+    from crm_check.sonnet_check import check_rows_parallel
+    from crm_check.output.excel_writer import write_sonnet_workbook
+
+    rows = list(parse_excel(xlsx))
+    total = len(rows)
+
+    # Skip rows die schon in vorherigen Runs verarbeitet wurden
+    skip_idx: set[int] = set()
+    for jf in exclude_jsonl or ():
+        with open(jf) as f:
+            for line in f:
+                try:
+                    skip_idx.add(_json.loads(line)["row_idx"])
+                except Exception:
+                    pass
+    if skip_idx:
+        before = len(rows)
+        rows = [r for r in rows if r.row_idx not in skip_idx]
+        click.echo(f"Excluded {before - len(rows)} rows aus {len(exclude_jsonl)} JSONL(s).")
+
+    if random_n:
+        rng = _random.Random(random_seed)
+        rows = rng.sample(rows, min(random_n, len(rows)))
+        rows.sort(key=lambda r: r.row_idx)
+        click.echo(f"Random-Sample: {len(rows)} aus {total} (seed={random_seed}).")
+    elif limit:
+        rows = rows[:limit]
+    click.echo(
+        f"Sonnet-Check: {len(rows)} rows | batch={batch_size} | "
+        f"parallel={max_parallel} | model={model}"
+    )
+
+    def _progress(done, total, idx):
+        click.echo(f"  [{done}/{total}] batch idx={idx} fertig", err=True)
+
+    verdicts = asyncio.run(
+        check_rows_parallel(
+            rows,
+            model=model,
+            batch_size=batch_size,
+            max_parallel=max_parallel,
+            progress_cb=_progress,
+        )
+    )
+
+    write_sonnet_workbook(rows, verdicts, out)
+
+    if verdicts_json:
+        verdicts_json.parent.mkdir(parents=True, exist_ok=True)
+        with verdicts_json.open("w") as f:
+            for v in verdicts:
+                f.write(_json.dumps(v.model_dump(), ensure_ascii=False) + "\n")
+        click.echo(f"Raw-JSONL: {verdicts_json}")
+
+    confirmed = sum(1 for v in verdicts if v.aktuell is True)
+    outdated = sum(1 for v in verdicts if v.aktuell is False)
+    unclear = sum(1 for v in verdicts if v.aktuell is None)
+    avg_konf = (
+        sum(v.konfidenz for v in verdicts) / len(verdicts) if verdicts else 0.0
+    )
+    click.echo(
+        f"\nFertig: {confirmed} aktuell | {outdated} veraltet | "
+        f"{unclear} unklar | avg konfidenz={avg_konf:.2f}"
+    )
+    click.echo(f"Output: {out}")
+
+
 if __name__ == "__main__":
     main()

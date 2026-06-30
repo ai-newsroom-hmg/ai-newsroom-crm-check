@@ -194,3 +194,113 @@ def write_workbook(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     return output_path
+
+
+# ── Sonnet-Pivot 2026-06-30 ─────────────────────────────────────────────
+# Schreibt CrmContact + SonnetVerdict statt CrmCheckState. Kein LangGraph
+# mehr im Datenfluss — Sonnet 4.6 liefert das Verdict direkt.
+
+SONNET_CHECK_COLUMNS = [
+    "aktuell", "bemerkung", "konfidenz",
+    "neue_position", "neue_firma", "linkedin", "quellen",
+    "quellen_count",
+]
+
+SONNET_ENRICH_COLUMNS = [
+    "row_idx", "name", "position_alt", "firma_alt",
+    "aktuell", "konfidenz", "neue_position", "neue_firma",
+    "linkedin", "quellen",
+]
+
+
+def write_sonnet_workbook(rows, verdicts, output_path):
+    """Schreibt 2-Reiter-Excel aus (CrmContact, SonnetVerdict)-Paaren.
+
+    rows: Sequence[CrmContact] (Reihenfolge = Excel-Reihenfolge)
+    verdicts: Sequence[SonnetVerdict] (row_idx-keyed, ggf. luckig)
+    """
+    from pathlib import Path as _Path
+    output_path = _Path(output_path)
+
+    by_idx = {v.row_idx: v for v in verdicts}
+
+    wb = Workbook()
+    ws_check = wb.active
+    ws_check.title = "Check"
+    ws_enrich = wb.create_sheet("Anreicherung")
+
+    headers = list(EXPECTED_HEADER) + SONNET_CHECK_COLUMNS
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws_check.cell(row=1, column=col_idx, value=h)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="DAE8FC")
+
+    for col_idx, h in enumerate(SONNET_ENRICH_COLUMNS, start=1):
+        cell = ws_enrich.cell(row=1, column=col_idx, value=h)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="D5E8D4")
+
+    aktuell_col = len(EXPECTED_HEADER) + 1
+    check_row = 2
+    enrich_row = 2
+
+    for r in rows:
+        raw = r.raw or {}
+        for col_idx, h in enumerate(EXPECTED_HEADER, start=1):
+            ws_check.cell(row=check_row, column=col_idx, value=raw.get(h))
+
+        v = by_idx.get(r.row_idx)
+        if v is None:
+            ws_check.cell(row=check_row, column=aktuell_col, value="?")
+            ws_check.cell(row=check_row, column=aktuell_col + 1, value="Kein Sonnet-Verdict")
+            ws_check.cell(row=check_row, column=aktuell_col + 2, value=0.0)
+            for off in range(3, len(SONNET_CHECK_COLUMNS)):
+                ws_check.cell(row=check_row, column=aktuell_col + off, value="")
+        else:
+            ws_check.cell(row=check_row, column=aktuell_col + 0, value=_aktuell_label(v.aktuell))
+            ws_check.cell(row=check_row, column=aktuell_col + 1, value=v.bemerkung)
+            ws_check.cell(row=check_row, column=aktuell_col + 2, value=round(v.konfidenz, 2))
+            ws_check.cell(row=check_row, column=aktuell_col + 3, value=v.neue_position or "")
+            ws_check.cell(row=check_row, column=aktuell_col + 4, value=v.neue_firma or "")
+            ws_check.cell(row=check_row, column=aktuell_col + 5, value=v.linkedin or "")
+            ws_check.cell(row=check_row, column=aktuell_col + 6, value="\n".join(v.quellen))
+            ws_check.cell(row=check_row, column=aktuell_col + 7, value=len(v.quellen))
+            fill = _aktuell_fill(v.aktuell)
+            if fill:
+                ws_check.cell(row=check_row, column=aktuell_col).fill = fill
+
+            ws_enrich.cell(row=enrich_row, column=1, value=r.row_idx)
+            ws_enrich.cell(row=enrich_row, column=2, value=r.name_only)
+            ws_enrich.cell(row=enrich_row, column=3, value=r.position)
+            ws_enrich.cell(row=enrich_row, column=4, value=r.company)
+            ws_enrich.cell(row=enrich_row, column=5, value=_aktuell_label(v.aktuell))
+            ws_enrich.cell(row=enrich_row, column=6, value=round(v.konfidenz, 2))
+            ws_enrich.cell(row=enrich_row, column=7, value=v.neue_position or "")
+            ws_enrich.cell(row=enrich_row, column=8, value=v.neue_firma or "")
+            ws_enrich.cell(row=enrich_row, column=9, value=v.linkedin or "")
+            ws_enrich.cell(row=enrich_row, column=10, value="\n".join(v.quellen))
+            enrich_row += 1
+
+        check_row += 1
+
+    # 20 Original-Spalten + 8 Sonnet-Spalten = 28
+    _autosize(ws_check, {
+        i: w for i, w in enumerate(
+            [6, 6, 14, 10, 8, 18, 8, 28, 28, 22,
+             22, 22, 28, 22, 22, 16, 16, 16, 16, 16,
+             8, 60, 8, 28, 25, 50, 60, 8],
+            start=1,
+        )
+    })
+    # Wrap-Text fuer bemerkung + quellen
+    for col_off in (1, 6):
+        for rr in range(2, check_row):
+            ws_check.cell(row=rr, column=aktuell_col + col_off).alignment = Alignment(wrap_text=True, vertical="top")
+    _autosize(ws_enrich, {1: 6, 2: 25, 3: 22, 4: 25, 5: 8, 6: 8, 7: 28, 8: 25, 9: 50, 10: 60})
+
+    ws_check.freeze_panes = "A2"
+    ws_enrich.freeze_panes = "A2"
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    return output_path

@@ -84,7 +84,12 @@ async def websearch_person(
 
     person = f"{first_name} {last_name}".strip()
     queries = [f'"{person}" {company or ""}'.strip()]
-    queries.append(f'"{person}" site:linkedin.com')
+    # LinkedIn-Profile-Queries: zwei Varianten, damit Brave/DDG/Qwant mehr
+    # Profile-Hits liefern (Recall-Hebel statt nur ein generischer site:-Query):
+    if company:
+        # Company-spezifischer LinkedIn-Query — exaktester Hit
+        queries.append(f'"{person}" "{company}" site:linkedin.com/in')
+    queries.append(f'"{person}" site:linkedin.com/in')
     if company:
         queries.append(f'"{person}" "{company}" Vorstand OR Geschäftsführer OR CEO')
 

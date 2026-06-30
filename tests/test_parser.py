@@ -85,3 +85,21 @@ def test_smart_name_only_falls_back_to_full_person():
     assert _smart_name_only("", "") == ""
     # Mit Titel in AddrLine1 wird Titel mitgenommen (kein Strip in name_only)
     assert _smart_name_only("Dr. Norbert Röttgen", "Herr Dr. Norbert Röttgen") == "Dr. Norbert Röttgen"
+
+
+def test_variant_a_no_position():
+    """Vorfall 2026-06-30: AddrLine1='Herr', AddrLine2='Willi Verhuven',
+    AddrLine3='Avitana GmbH' → AddrLine2 ist Name, NICHT Position.
+    Parser muss position='' liefern, sonst halluziniert der Reason-Node
+    'position: Willi Verhuven → Unternehmer'-Verdikte."""
+    from crm_check.parser import _is_variant_a, _smart_position
+    # Variant-A erkannt: AddrLine1 ist nur Anrede
+    assert _is_variant_a("Herr") is True
+    assert _is_variant_a("Frau") is True
+    # Variant-B: AddrLine1 hat Namen
+    assert _is_variant_a("Frank Schwittay") is False
+    assert _is_variant_a("") is False
+    # Position-Mapping
+    assert _smart_position("Herr", "Willi Verhuven") == ""
+    assert _smart_position("Frank Schwittay", "Geschäftsführer") == "Geschäftsführer"
+    assert _smart_position("", "Geschäftsführer") == "Geschäftsführer"

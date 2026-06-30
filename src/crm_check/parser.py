@@ -86,6 +86,38 @@ def _smart_name_only(addr_line_1: str, full_person: str) -> str:
     return strip_salutation(full_person).strip() if full_person else ""
 
 
+def _is_variant_a(addr_line_1: str) -> bool:
+    """Variant-A-Layout: AddrLine1 = Anrede, AddrLine2 = Name, AddrLine3 = Firma.
+
+    In diesem Fall gibt es KEINE separate Position-Spalte — AddrLine2 ist der
+    Name, NICHT die Position. Variant-B (Standard): AddrLine1 = Name,
+    AddrLine2 = Position, AddrLine3 = Firma.
+
+    Vorfall 2026-06-30: ohne diese Erkennung interpretiert der Parser fuer
+    4/10 Random-10-Rows AddrLine2 als Position, obwohl es der Name ist (z.B.
+    position='Willi Verhuven' statt position=''), und der Agent produziert
+    bizarre 'Abweichung erkannt'-Verdikte vom Typ "position: 'Willi Verhuven'
+    → 'Unternehmer'".
+    """
+    return bool(addr_line_1) and _is_only_salutation(addr_line_1)
+
+
+def _smart_position(addr_line_1: str, addr_line_2: str) -> str:
+    """Variant-B: AddrLine2 = Position. Variant-A: keine Position-Spalte (return '')."""
+    if _is_variant_a(addr_line_1):
+        return ""
+    return addr_line_2 or ""
+
+
+def _smart_company(addr_line_1: str, addr_line_3: str, addr_line_4: str) -> str:
+    """Variant-B: AddrLine3 = Firma. Variant-A: ebenfalls AddrLine3.
+
+    (AddrLine3 ist in beiden Varianten die Firma — der Variant-A-Shift
+    betrifft nur Position vs Name; Firma bleibt in Slot 3.)
+    """
+    return addr_line_3 or ""
+
+
 def parse_excel(path: str | Path, sheet: str | None = None) -> Iterator[CrmContact]:
     """Iteriert über die Datenzeilen einer Mailing-Excel.
 
@@ -116,13 +148,16 @@ def parse_excel(path: str | Path, sheet: str | None = None) -> Iterator[CrmConta
 
         salutation_name = _coerce_str(raw.get("FullPerson"))
         addr_line_1 = _coerce_str(raw.get("AddrLine1"))
+        addr_line_2 = _coerce_str(raw.get("AddrLine2"))
+        addr_line_3 = _coerce_str(raw.get("AddrLine3"))
+        addr_line_4 = _coerce_str(raw.get("AddrLine4"))
         yield CrmContact(
             row_idx=row_idx,
             raw=raw,
             salutation_name=salutation_name,
             name_only=_smart_name_only(addr_line_1, salutation_name),
-            position=_coerce_str(raw.get("AddrLine2")),
-            company=_coerce_str(raw.get("AddrLine3")),
+            position=_smart_position(addr_line_1, addr_line_2),
+            company=_smart_company(addr_line_1, addr_line_3, addr_line_4),
             street=_coerce_str(raw.get("AddrLine4")),
             zip_city=_coerce_str(raw.get("AddrLine5")),
             city=_coerce_str(raw.get("City")),

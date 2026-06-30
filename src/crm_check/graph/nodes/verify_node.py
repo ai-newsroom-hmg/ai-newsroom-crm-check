@@ -80,31 +80,33 @@ Antworte EXAKT mit diesem JSON, nichts sonst, kein Markdown:
 }}"""
 
 
-def _extract_linkedin_candidates(websearch_results: list) -> list[str]:
+def _extract_linkedin_candidates(websearch_results: list, last_name: str = "") -> list[str]:
     """Sammelt alle /in/-LinkedIn-Profile-URLs aus den WebSearch-Hits.
 
-    Wir filtern auf `linkedin.com/in/` (Personenprofile), nicht /posts/, /company/,
-    /pub/dir/. Das gibt dem LLM eine Shortlist zum Plausibilitaets-Check, statt
-    ihn frei aus Snippets extrahieren zu lassen (Random-10 v5 2026-06-30:
-    SearXNG liefert 18 Hits fuer "Kurt Zech site:linkedin.com", LLM extrahiert
-    NULL weil unsicher zwischen Namensvettern).
+    Filtert auf `linkedin.com/in/` (Personenprofile), nicht /posts/, /company/,
+    /pub/dir/. Sortierung: URLs deren Slug den Last-Name enthaelt zuerst.
+    Das hebt Kurt-Zech-Profile mit "kurt-zech-..." im Slug ueber andere Hits.
     """
     seen: set[str] = set()
-    out: list[str] = []
+    name_match: list[str] = []
+    other: list[str] = []
+    last_lower = last_name.casefold().strip() if last_name else ""
     for wr in websearch_results:
         for h in wr.hits:
             url = (h.url or "").strip()
             if "linkedin.com/in/" not in url.lower():
                 continue
-            # Normalisiere trailing slash / query
             base = url.split("?")[0].rstrip("/")
             if base in seen:
                 continue
             seen.add(base)
-            out.append(base)
-            if len(out) >= 5:
-                return out
-    return out
+            # Slug nach /in/ ziehen, Bindestriche gegen Last-Name pruefen
+            slug = base.lower().split("linkedin.com/in/", 1)[-1].split("/")[0]
+            if last_lower and last_lower in slug:
+                name_match.append(base)
+            else:
+                other.append(base)
+    return (name_match + other)[:8]
 
 
 def _build_hits_block(websearch_results: list, max_hits: int = 8) -> str:
@@ -245,7 +247,10 @@ def make_verify_node() -> NodeFn:
             return CrmCheckState()
 
         t0 = time.monotonic()
-        li_candidates = _extract_linkedin_candidates(websearch)
+        li_candidates = _extract_linkedin_candidates(
+            websearch,
+            last_name=(state.get("last_name") or "").strip(),
+        )
         li_block = "\n".join(f"  - {u}" for u in li_candidates) if li_candidates else "  (keine LinkedIn-Personenprofile in den Treffern)"
         prompt = _VERIFY_PROMPT.format(
             full_name=state.get("clean_name") or "?",
